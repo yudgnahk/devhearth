@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/yudgnahk/devhearth/internal/assets"
+	"github.com/yudgnahk/devhearth/internal/detect"
+	"github.com/yudgnahk/devhearth/internal/detect/builtin"
 	"github.com/yudgnahk/devhearth/internal/protocol"
 	"github.com/yudgnahk/devhearth/internal/scan"
 	"github.com/yudgnahk/devhearth/internal/store"
@@ -30,13 +33,34 @@ func main() {
 		}
 		defer inventory.Close()
 	}
-	server := protocol.NewServer(protocol.ServerOptions{MockScan: *mockScan, Logger: logger, OnComplete: func(ctx context.Context, result scan.Result, status string) error {
-		if inventory == nil {
-			return nil
+
+	var registry *detect.Registry
+	if !*mockScan {
+		var err error
+		registry, err = builtin.NewRegistry()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "register detectors:", err)
+			os.Exit(1)
 		}
-		_, err := inventory.Save(ctx, result, status)
-		return err
-	}})
+	}
+
+	server := protocol.NewServer(protocol.ServerOptions{
+		MockScan: *mockScan,
+		Logger:   logger,
+		Detect: func(ctx context.Context, result scan.Result, progress func(detect.Progress)) (assets.Graph, error) {
+			if registry == nil {
+				return assets.Graph{}, nil
+			}
+			return detect.Run(ctx, registry, result, detect.RunOptions{Progress: progress})
+		},
+		OnComplete: func(ctx context.Context, result scan.Result, graph assets.Graph, status string) error {
+			if inventory == nil {
+				return nil
+			}
+			_, err := inventory.Save(ctx, result, graph, status)
+			return err
+		},
+	})
 	if err := server.Serve(context.Background(), os.Stdin, os.Stdout); err != nil && err != io.EOF {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

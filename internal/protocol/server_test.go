@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/scan"
 )
 
@@ -68,6 +69,26 @@ func TestReportRedactsSelectedPaths(t *testing.T) {
 	}
 	if report.Inaccessible[0].Path != "<selected-root-1>/private" {
 		t.Fatalf("inaccessible path = %q", report.Inaccessible[0].Path)
+	}
+}
+
+func TestAssetsListRedactsPathsAndIncludesEvidence(t *testing.T) {
+	active := &activeScan{
+		status: "complete",
+		result: scan.Result{Roots: []string{"/Users/example/Projects"}},
+		graph: assets.Graph{Assets: []assets.Asset{{
+			ID: "a1", Kind: assets.KindProject, DisplayName: "app",
+			Path: "/Users/example/Projects/app", Risk: assets.RiskInformational,
+			Ecosystem: "node", DetectorID: "detect.node", DetectorVersion: 1,
+			Evidence: []assets.Evidence{{Kind: "path_signature", Value: "/Users/example/Projects/app/package.json", Confidence: 0.9}},
+		}}},
+	}
+	listed := assetsList("scan_01", active)
+	if listed.Assets[0].Path != "<selected-root-1>/app" {
+		t.Fatalf("path = %q", listed.Assets[0].Path)
+	}
+	if listed.Assets[0].Evidence[0].Value != "<selected-root-1>/app/package.json" {
+		t.Fatalf("evidence = %q", listed.Assets[0].Evidence[0].Value)
 	}
 }
 

@@ -50,6 +50,12 @@ validation remain. See [the Phase 1 task list](PHASE_1_TASKS.md).
 
 Exit criteria: Most storage within representative developer roots is attributed to projects, runtimes, package managers, dependency stores, containers, AI assets, or unknown data. Portfolio inventory answers what is installed and what projects use—not yet which option fits best.
 
+Status: In progress. The first asset-graph slice provides multi-ecosystem
+path-signature detectors, Git repo/worktree detection, portfolio summaries,
+SQLite asset persistence, protocol asset/portfolio queries, and a preview
+evidence inspector. Size attribution, deep Git status, richer runtime
+inventory, and graph visualization remain. See [the Phase 2 task list](PHASE_2_TASKS.md).
+
 ## Phase 3 — Optimization advisor
 
 - Deterministic recommendation framework.

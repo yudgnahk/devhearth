@@ -24,6 +24,16 @@ import Testing
     #expect(error.localizedDescription.contains("incompatible"))
 }
 
+@Test func decodesAssetsListResult() throws {
+    let data = Data(#"""
+    {"scanId":"scan_01","assets":[{"id":"a1","kind":"project","displayName":"app","path":"<selected-root-1>/app","risk":"informational","ecosystem":"node","class":"project","detectorId":"detect.node","detectorVersion":1,"evidence":[{"kind":"manifest","value":"package.json","confidence":0.9}]}],"relationships":[]}
+    """#.utf8)
+    let result = try JSONDecoder().decode(AssetsListResult.self, from: data)
+    #expect(result.assets.count == 1)
+    #expect(result.assets[0].classification == "project")
+    #expect(result.assets[0].evidence?.first?.kind == "manifest")
+}
+
 @Test func engineSubprocessNegotiatesAndCompletesMockScan() throws {
     guard let path = ProcessInfo.processInfo.environment["DEVHEARTH_ENGINE_PATH"] else { return }
     let process = Process()
