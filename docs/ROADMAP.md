@@ -4,16 +4,18 @@ This roadmap prioritizes trustworthy understanding before automation.
 
 ## Phase 0 — Foundations
 
-- Finalize product vocabulary and scope.
-- Choose a project name.
-- Create the GitHub repository and licenses.
-- Establish Go and Swift directory structure.
-- Define JSON-RPC handshake and schema versioning.
-- Define the SQLite schema and detector interface.
-- Build representative synthetic filesystem fixtures.
-- Establish cold and incremental scan benchmarks.
+- [x] Finalize product vocabulary and scope.
+- [x] Choose a project name.
+- [x] Create the GitHub repository and license.
+- [x] Establish Go and Swift directory structure.
+- [x] Define JSON-RPC handshake and schema versioning.
+- [x] Define the SQLite schema and detector interface.
+- [x] Build representative synthetic filesystem fixtures.
+- [x] Establish cold and incremental scan benchmarks.
 
 Exit criteria: Swift launches the bundled Go engine, negotiates a protocol version, and displays a mocked scan stream.
+
+Status: In progress. The foundations are implemented; bundled-engine packaging and Xcode validation remain. See [the Phase 0 verification checklist](PHASE_0_TASKS.md).
 
 ## Phase 1 — Read-only filesystem inventory
 
@@ -118,4 +120,3 @@ Before building mutation features, test the read-only prototype with at least th
 - 256 GB machine under storage pressure and a larger workstation.
 
 Collect which recommendations users trust, reject, or cannot understand. Do not use raw file inventories as telemetry.
-
