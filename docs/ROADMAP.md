@@ -32,27 +32,31 @@ Exit criteria: The app can scan selected developer roots reliably and explain in
 
 - Git repository and worktree detection.
 - Node, Python, Go, Rust, Swift, Java, and Terraform detectors.
-- Runtime-manager inventory.
+- Runtime and version-manager inventory (Homebrew, mise, asdf, nvm/fnm/Volta, pyenv, rustup, SDKMAN, Xcode, and similar).
+- Package-manager and dependency-store inventory (broad detection): npm, Yarn, pnpm, Bun, pip/Poetry/Pipenv/uv/Conda, Cargo, Go modules, Maven/Gradle, SwiftPM/CocoaPods, and other common tools when present.
+- Distinguish project-local installs, shared stores, download caches, and build output.
 - Docker/Compose and local VM-runtime inventory.
 - Initial AI model and dataset detectors.
-- Asset relationship UI.
+- Asset relationship UI, including tool portfolio summaries per ecosystem.
 - Detector evidence inspector.
 
-Exit criteria: Most storage within representative developer roots is attributed to projects, runtimes, dependencies, containers, AI assets, or unknown data.
+Exit criteria: Most storage within representative developer roots is attributed to projects, runtimes, package managers, dependency stores, containers, AI assets, or unknown data. Portfolio inventory answers what is installed and what projects use—not yet which option fits best.
 
 ## Phase 3 — Optimization advisor
 
 - Deterministic recommendation framework.
-- Duplicate runtime analysis.
-- pnpm migration suitability assessment.
-- uv migration suitability assessment.
+- Duplicate runtime and version-manager analysis.
+- Tool portfolio fit scoring (multi-factor; includes stay-put):
+  - Deep analysis first for Node.js/TypeScript (npm, Yarn, pnpm, Bun) and Python (pip/venv, Poetry, Pipenv, uv, Conda).
+  - Shared-store adoption estimates without claiming automatic compatibility.
+  - Later depth for Go, Rust, Swift/Xcode, and Java as fixtures and confidence allow.
 - Hibernation candidate assessment.
 - Duplicate Git checkout and worktree analysis.
 - Downloadable AI model duplication analysis.
-- Savings ranges, confidence, restoration costs, and risk ratings.
-- Plan comparison UI.
+- Savings ranges, confidence, restoration costs, blockers, and risk ratings.
+- Plan comparison UI and fit-factor evidence views.
 
-Exit criteria: The product provides useful, evidence-backed structural recommendations without modifying the filesystem.
+Exit criteria: The product provides useful, evidence-backed structural recommendations—including portfolio-fit rankings with tradeoffs—without modifying the filesystem or declaring a single absolute best tool.
 
 ## Phase 4 — Incremental monitoring and portable policy
 
@@ -73,7 +77,8 @@ Exit criteria: A policy can be reused on a second Mac without exposing the first
 - Operation journal and recovery.
 - Native Trash integration.
 - Project hibernation and restoration for the safest supported ecosystems.
-- Runtime consolidation assistant.
+- Runtime and version-manager consolidation assistant.
+- Guided package-manager or shared-store migration only where fit confidence and preflight pass (never unattended).
 - Post-operation verification.
 
 Exit criteria: Supported low-risk operations survive failure injection and restore successfully in integration tests.
@@ -104,8 +109,9 @@ Exit criteria: The product remains fully functional without AI, and AI cannot in
 Before building mutation features, test the read-only prototype with at least these profiles:
 
 - iOS developer with multiple Xcode versions and simulators.
-- Node/TypeScript developer with dozens of repositories.
-- Python/ML developer with Conda, venv, uv, and large model stores.
+- Node/TypeScript developer with dozens of repositories across npm, Yarn, and pnpm.
+- Python/ML developer with Conda, venv, Poetry, uv, and large model stores.
+- Polyglot developer with overlapping version managers (for example mise plus nvm/pyenv leftovers).
 - Go/Rust backend developer using containers.
 - AI-heavy developer using multiple editors, worktrees, local models, and vector databases.
 - Intel Mac and Apple Silicon Mac where available.

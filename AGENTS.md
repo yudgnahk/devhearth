@@ -4,7 +4,7 @@
 
 DevHearth is a privacy-first macOS application that scans developer storage, understands relationships among projects and their environments, and recommends structural optimizations.
 
-It is not a generic disk or cache cleaner. Prefer reducing duplication and future growth through shared runtimes, shared dependency stores, ownership mapping, and safe project hibernation.
+It is not a generic disk or cache cleaner. Prefer reducing duplication and future growth through shared runtimes, shared dependency stores, tool-portfolio fit (version managers and package managers ranked with evidence—not a single absolute best tool), ownership mapping, and safe project hibernation.
 
 ## Source of truth
 
@@ -20,10 +20,10 @@ If code and documentation disagree, surface the conflict. Do not silently reinte
 ## Technology boundaries
 
 - Swift 6 and SwiftUI own the macOS UI, permissions, lifecycle, and native integrations.
-- Go owns scanning, detection, analysis, recommendations, persistence, reports, and the CLI.
+- Go owns scanning, detection, analysis (including tool portfolio and fit scoring), recommendations, persistence, reports, and the CLI.
 - SQLite stores the local inventory.
 - Swift and Go initially communicate through versioned JSON-RPC with Go as a bundled child process.
-- AI may explain deterministic findings but cannot make safety decisions.
+- AI may explain deterministic findings and fit rankings but cannot change scores, blockers, risk, or authorize operations.
 - Do not introduce Rust without a reproducible benchmark showing Go cannot meet an important requirement.
 
 Keep product logic in Go and platform/UI behavior in Swift. Do not duplicate recommendation or safety rules across languages.

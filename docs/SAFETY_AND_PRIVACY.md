@@ -1,7 +1,7 @@
 # Safety, Privacy, and Trust Model
 
 Status: Draft  
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 ## Trust promise
 
@@ -61,7 +61,25 @@ Every recommendation records:
 - Expected mutation scope.
 - Restoration prerequisites.
 
+For portfolio-fit recommendations, also record:
+
+- Options ranked, including the stay-put baseline.
+- Factor scores and which signals dominated.
+- Explicit blockers (for example Yarn PnP, private registry layouts, missing lockfiles).
+- That the ranking is comparative fit for the observed portfolio, not an absolute industry best tool.
+
 AI-generated prose is visually distinguishable from deterministic evidence.
+
+## Portfolio fit and tool preference safety
+
+Fit scoring and preferred-tool policy guide structure; they do not authorize mutation and cannot weaken risk.
+
+- A higher fit score for pnpm, uv, mise, or any other tool never implies that lockfile rewrites, installs, or deletions are safe.
+- Fit scores cannot lower a deterministic risk class for migration, consolidation, or hibernation.
+- Preferring a package manager in policy does not mark unknown project data as reproducible.
+- “Stay with the current tool” must remain a first-class outcome when migration friction exceeds expected benefit.
+- AI may explain a fit ranking in plain language but cannot change scores, blockers, or risk.
+- Exported policies carry explicit preferred tools only by default; inferred portfolio fingerprints and project-level tool usage require opt-in and redaction.
 
 ## Mutation protocol
 
@@ -111,6 +129,7 @@ Prohibited AI authority:
 
 - Marking unknown data safe.
 - Lowering risk.
+- Changing portfolio fit scores, blockers, or ranked order.
 - Selecting files for deletion without deterministic rules.
 - Executing shell commands directly.
 - Sending filenames, source, manifests, or inventory to a provider without explicit preview and consent.

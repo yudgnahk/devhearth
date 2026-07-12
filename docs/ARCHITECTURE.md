@@ -1,13 +1,13 @@
 # Architecture and Technology Stack
 
 Status: Proposed  
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 ## Decision
 
 Use a native SwiftUI macOS application with a Go core engine. Do not introduce Rust for the initial implementation.
 
-The Go engine is independently usable as a CLI and communicates with the Swift application through a versioned local protocol. Swift owns the macOS application lifecycle and platform integrations. Go owns scanning, detection, analysis, persistence, recommendation generation, and report export.
+The Go engine is independently usable as a CLI and communicates with the Swift application through a versioned local protocol. Swift owns the macOS application lifecycle and platform integrations. Go owns scanning, detection, analysis (including tool portfolio and fit scoring), persistence, recommendation generation, and report export.
 
 ## Why Go is sufficient
 
@@ -147,10 +147,12 @@ internal/protocol/       Versioned UI protocol
 internal/scan/           Traversal and metadata collection
 internal/detect/         Detector interfaces and registry
 internal/detect/git/     Git repositories and worktrees
-internal/detect/node/    Node manifests and dependencies
-internal/detect/python/  Python environments
+internal/detect/node/    Node manifests, package managers, and stores
+internal/detect/python/  Python environments and package tools
+internal/detect/runtime/ Version managers and runtime installations
 internal/detect/ai/      Models, datasets, and AI tools
 internal/assets/         Asset and relationship model
+internal/portfolio/      Tool portfolio aggregation and fit scoring
 internal/recommend/      Deterministic recommendation rules
 internal/policy/         Portable policy parsing
 internal/store/          SQLite repository and migrations
@@ -194,10 +196,15 @@ AssetLocation
 Relationship
 Project
 Manifest
+ToolInstallation
 RuntimeInstallation
+PackageManagerInstallation
+DependencyStore
 DependencyEnvironment
 ContainerResource
 AIAsset
+PortfolioSummary
+FitAssessment
 Evidence
 Recommendation
 Plan
@@ -208,17 +215,26 @@ AuditEvent
 
 An asset is a logical object; locations are paths or runtime identifiers. This allows one model digest, runtime, or Git repository to have several physical locations without pretending those locations are independent assets.
 
+`ToolInstallation` is the common supertype for discovered tools. `RuntimeInstallation`, `PackageManagerInstallation`, and `DependencyStore` specialize it so recommendations can treat version managers, package managers, and stores as distinct classes (see product taxonomy in SPECS).
+
+`PortfolioSummary` aggregates installed tools, in-use project counts, and storage by class for an ecosystem. `FitAssessment` stores ranked options, factor scores, blockers, savings ranges, and the stay-put baseline for a portfolio or project set. Fit assessments feed recommendations; they never authorize mutation.
+
 Relationships use typed edges such as:
 
 - `project_requires_runtime`
+- `project_uses_package_manager`
 - `project_owns_environment`
 - `manifest_restores_environment`
+- `store_serves_projects`
+- `tool_duplicates_capability`
+- `tool_manages_runtime`
 - `compose_references_image`
 - `volume_may_belong_to_project`
 - `location_exactly_duplicates_location`
 - `asset_downloadable_from_source`
 - `worktree_belongs_to_repository`
 - `recommendation_affects_asset`
+- `fit_assessment_ranks_tool`
 
 Every inferred relationship carries evidence, confidence, detector version, and scan ID.
 
@@ -257,20 +273,23 @@ Avoid an unrestricted third-party plugin system initially. Filesystem scanners e
 
 - Run cheap signature detectors against names and metadata.
 - Parse manifests only in candidate directories.
+- Detect version managers, package managers, dependency stores, and caches.
 - Associate project-local environments and outputs.
 
-### Phase 4: Relationship analysis
+### Phase 4: Relationship and portfolio analysis
 
 - Inspect Git state.
-- Associate runtime requirements.
+- Associate runtime requirements and package-manager usage.
+- Build per-ecosystem portfolio summaries (installed, in-use, storage by class).
 - Associate containers and AI stores.
 - Group exact and likely duplicates using staged evidence.
+- Run fit scoring where deep analysis is enabled for the ecosystem.
 
 ### Phase 5: Recommendations
 
-- Execute deterministic rules.
-- Calculate confidence, savings range, restoration cost, and risk.
-- Persist evidence and explanations.
+- Execute deterministic rules, including portfolio-fit and shared-store rules.
+- Calculate confidence, savings range, restoration cost, blockers, and risk.
+- Persist evidence, fit assessments, and explanations.
 
 ## Performance plan
 
@@ -324,6 +343,10 @@ Initial methods:
 - `scan.status`
 - `assets.list`
 - `assets.get`
+- `portfolio.list`
+- `portfolio.get`
+- `fit.list`
+- `fit.get`
 - `recommendations.list`
 - `recommendations.get`
 - `report.export`
@@ -362,6 +385,7 @@ Support Apple Silicon first. Keep the Go engine architecture-neutral and avoid u
 | Persistence | SQLite | Local, queryable, transactional, portable |
 | Incremental updates | FSEvents via Swift/native bridge | Native macOS filesystem notifications |
 | Rules | Deterministic Go | Auditable safety and testability |
-| AI | Optional explanation layer | Never safety authority |
+| Portfolio fit | Deterministic Go scoring | Multi-factor ranks with stay-put; never absolute “best tool” |
+| AI | Optional explanation layer | Never safety authority or fit-score authority |
 | Rust | Deferred | Add only for a proven hotspot |
 
