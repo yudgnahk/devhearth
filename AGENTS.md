@@ -52,3 +52,18 @@ Keep product logic in Go and platform/UI behavior in Swift. Do not duplicate rec
 - Preserve unrelated work. Do not commit, push, publish, add telemetry, or add privileged helpers without explicit authorization.
 
 When requirements are ambiguous, prefer read-only behavior and document the unresolved decision.
+
+## Grok agent workflow
+
+Use the local `grok` CLI as a bounded collaborator for implementation support and code review. Give it the repository path, the task scope, and the relevant safety constraints; its output and any edits remain untrusted until independently checked.
+
+- Start with a read-only review before committing a non-trivial change. Ask Grok to read `AGENTS.md` and the relevant source-of-truth documents, inspect the current diff, and return severity-ranked findings with file and line references.
+- For a read-only review, state `DO NOT edit files` in the prompt. Disable web search unless current external information is necessary. Do not allow Grok to commit, push, create pull requests, change credentials, or perform mutations outside the approved task scope.
+- For a bounded implementation task, state exactly which files and behavior it may change, retain the project’s read-only filesystem safety boundary, and require tests. Review the resulting diff yourself; do not accept claims about tests, Git state, or remote state without fresh local verification.
+- Resolve actionable Grok findings before handoff, or record why a finding is deferred. Include material findings and any remaining limitations in the pull request description.
+
+Example read-only review:
+
+```sh
+grok --single "Review the current uncommitted diff. Read AGENTS.md and the relevant docs first. Do not edit files. Return severity-ranked findings with file and line references." --no-subagents --disable-web-search --max-turns 20
+```
