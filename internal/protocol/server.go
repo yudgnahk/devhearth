@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -67,8 +68,15 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 		default:
 		}
 
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			// Ignore blank lines from clients or terminals; they are not requests.
+			continue
+		}
+
 		var request Request
-		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
+		if err := json.Unmarshal(line, &request); err != nil {
+			s.options.Logger.Warn("protocol parse error", "error", err, "line", truncateForLog(line, 120))
 			if writeErr := s.write(encoder, Response{JSONRPC: JSONRPCVersion, Error: &Error{Code: -32700, Message: "parse error"}}); writeErr != nil {
 				return writeErr
 			}
@@ -79,6 +87,13 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 		}
 	}
 	return scanner.Err()
+}
+
+func truncateForLog(line []byte, max int) string {
+	if max <= 0 || len(line) <= max {
+		return string(line)
+	}
+	return string(line[:max]) + "…"
 }
 
 func (s *Server) handle(ctx context.Context, encoder *json.Encoder, request Request) error {

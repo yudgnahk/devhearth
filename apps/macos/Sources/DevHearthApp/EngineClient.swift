@@ -8,6 +8,7 @@ enum EngineClientError: LocalizedError {
     case incompleteStream
     case engineNotRunning
     case engineExited(code: Int32)
+    case engineRPC(RPCError)
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +25,8 @@ enum EngineClientError: LocalizedError {
             return "The engine is not running."
         case .engineExited(let code):
             return "The engine exited unexpectedly (code \(code))."
+        case .engineRPC(let error):
+            return error.localizedDescription
         }
     }
 }
@@ -41,7 +44,7 @@ final class EngineClient {
     private(set) var enginePath: String?
 
     private var process: Process?
-    private var input: FileHandle?
+    private var stdinHandle: FileHandle?
     private var nextID = 0
     private var helloRequestID: String?
     private var scanRequestID: String?
@@ -52,6 +55,7 @@ final class EngineClient {
     private var assetsLoaded = false
     private var portfolioLoaded = false
     private var mode: SessionMode = .idle
+    private var connectTask: Task<Void, Never>?
 
     private enum SessionMode {
         case idle
@@ -61,6 +65,19 @@ final class EngineClient {
 
     /// Locate and hello-negotiate the engine without starting a scan.
     func connect() async {
+        if let connectTask {
+            await connectTask.value
+            return
+        }
+        let task = Task { @MainActor in
+            await self.performConnect()
+        }
+        connectTask = task
+        await task.value
+        connectTask = nil
+    }
+
+    private func performConnect() async {
         guard !isScanning else { return }
         do {
             errorMessage = nil
@@ -76,6 +93,10 @@ final class EngineClient {
     }
 
     func start(roots: [String]) async {
+        // Avoid overlapping a probe connect with a scan.
+        if let connectTask {
+            await connectTask.value
+        }
         do {
             progress = []
             assets = []
@@ -100,11 +121,13 @@ final class EngineClient {
     }
 
     func stop() {
-        input?.closeFile()
-        input = nil
-        if process?.isRunning == true {
-            process?.terminate()
-            process?.waitUntilExit()
+        if let handle = stdinHandle {
+            try? handle.close()
+        }
+        stdinHandle = nil
+        if let process, process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
         }
         process = nil
         mode = .idle
@@ -144,21 +167,23 @@ final class EngineClient {
         let process = Process()
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
         process.executableURL = executable
         process.arguments = ["-database", inventoryDatabasePath()]
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        // Prefer a stable cwd so relative fallbacks remain predictable.
+        // Inherit stderr so engine diagnostics appear in the `make run` terminal
+        // and so a full stderr pipe cannot deadlock the child process.
+        process.standardError = FileHandle.standardError
         process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+
         do {
             try process.run()
         } catch {
             throw EngineClientError.invalidMessage(detail: "failed to launch \(executable.path): \(error.localizedDescription)")
         }
         self.process = process
-        input = stdinPipe.fileHandleForWriting
+        // Keep only the write end in the parent.
+        stdinHandle = stdinPipe.fileHandleForWriting
 
         status = "Negotiating protocol…"
         helloRequestID = try send(method: "engine.hello", params: HelloParams())
@@ -166,16 +191,14 @@ final class EngineClient {
         for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
             try handle(line)
             if sessionMode == .probe, helloRequestID == nil {
-                // hello handled and cleared
                 break
             }
             if sessionMode == .scan, assetsLoaded, portfolioLoaded {
                 break
             }
-            if !process.isRunning, !(sessionMode == .scan && assetsLoaded && portfolioLoaded) {
-                let err = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                if !err.isEmpty {
-                    throw EngineClientError.invalidMessage(detail: err.trimmingCharacters(in: .whitespacesAndNewlines))
+            if !process.isRunning {
+                if sessionMode == .scan, assetsLoaded, portfolioLoaded {
+                    break
                 }
                 throw EngineClientError.engineExited(code: process.terminationStatus)
             }
@@ -186,12 +209,8 @@ final class EngineClient {
             return
         }
 
-        // Drain a bit of stderr for diagnostics if the scan ended oddly.
         if progress.last?.complete != true {
-            let err = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if process.terminationStatus != 0 {
-                throw EngineClientError.invalidMessage(detail: err.isEmpty ? "scan incomplete" : err)
-            }
+            throw EngineClientError.incompleteStream
         }
         stop()
     }
@@ -200,19 +219,32 @@ final class EngineClient {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let data = Data(trimmed.utf8)
+
         let header: RPCHeader
         do {
             header = try JSONDecoder().decode(RPCHeader.self, from: data)
         } catch {
-            throw EngineClientError.invalidMessage(detail: "header decode failed for: \(trimmed.prefix(200))")
+            throw EngineClientError.invalidMessage(detail: "header decode failed for: \(trimmed.prefix(240))")
         }
         guard header.jsonrpc == "2.0" else {
-            throw EngineClientError.invalidMessage(detail: "bad jsonrpc in \(trimmed.prefix(200))")
+            throw EngineClientError.invalidMessage(detail: "bad jsonrpc in \(trimmed.prefix(240))")
         }
 
-        if header.id == helloRequestID {
+        // Parse / server errors may omit id (JSON-RPC allows null id on parse failure).
+        if let error = header.error {
+            let matchesPending =
+                header.id?.raw == helloRequestID ||
+                header.id?.raw == scanRequestID ||
+                header.id?.raw == assetsRequestID ||
+                header.id?.raw == portfolioRequestID
+            if header.id == nil || header.id?.isEmpty == true || matchesPending {
+                throw EngineClientError.engineRPC(error)
+            }
+        }
+
+        if header.id?.raw == helloRequestID {
             let hello = try JSONDecoder().decode(RPCEnvelope<HelloResult>.self, from: data)
-            if let error = hello.error { throw error }
+            if let error = hello.error { throw EngineClientError.engineRPC(error) }
             guard let result = hello.result,
                   result.protocolVersion == protocolVersion,
                   result.schemaVersion == schemaVersion,
@@ -228,9 +260,9 @@ final class EngineClient {
             ))
             return
         }
-        if header.id == scanRequestID {
+        if header.id?.raw == scanRequestID {
             let started = try JSONDecoder().decode(RPCEnvelope<ScanStarted>.self, from: data)
-            if let error = started.error { throw error }
+            if let error = started.error { throw EngineClientError.engineRPC(error) }
             guard let result = started.result else {
                 throw EngineClientError.invalidMessage(detail: "scan.start missing result")
             }
@@ -238,9 +270,9 @@ final class EngineClient {
             status = "Scan running"
             return
         }
-        if header.id == assetsRequestID {
+        if header.id?.raw == assetsRequestID {
             let envelope = try JSONDecoder().decode(RPCEnvelope<AssetsListResult>.self, from: data)
-            if let error = envelope.error { throw error }
+            if let error = envelope.error { throw EngineClientError.engineRPC(error) }
             guard let result = envelope.result else {
                 throw EngineClientError.invalidMessage(detail: "assets.list missing result")
             }
@@ -250,9 +282,9 @@ final class EngineClient {
             status = "Loaded \(assets.count) assets"
             return
         }
-        if header.id == portfolioRequestID {
+        if header.id?.raw == portfolioRequestID {
             let envelope = try JSONDecoder().decode(RPCEnvelope<PortfolioListResult>.self, from: data)
-            if let error = envelope.error { throw error }
+            if let error = envelope.error { throw EngineClientError.engineRPC(error) }
             guard let result = envelope.result else {
                 throw EngineClientError.invalidMessage(detail: "portfolio.list missing result")
             }
@@ -264,7 +296,7 @@ final class EngineClient {
             return
         }
         guard header.id == nil, header.method == "scan.progress" else {
-            throw EngineClientError.invalidMessage(detail: "unexpected message: \(trimmed.prefix(200))")
+            throw EngineClientError.invalidMessage(detail: "unexpected message: \(trimmed.prefix(240))")
         }
         let event = try JSONDecoder().decode(ProgressEnvelope.self, from: data)
         guard event.method == "scan.progress", event.params.scanId == activeScanID else {
@@ -289,14 +321,45 @@ final class EngineClient {
 
     @discardableResult
     private func send<Params: Encodable>(method: String, params: Params) throws -> String {
-        guard let input else { throw EngineClientError.engineNotRunning }
+        guard let stdinHandle else { throw EngineClientError.engineNotRunning }
         nextID += 1
         let id = String(nextID)
-        let request = RPCRequest(id: id, method: method, params: params)
-        var data = try JSONEncoder().encode(request)
+
+        // Encode params first, then build the envelope with JSONSerialization so the
+        // wire format is always a single compact JSON object + newline.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let paramsData = try encoder.encode(params)
+        let paramsObject = try JSONSerialization.jsonObject(with: paramsData)
+
+        let envelope: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": paramsObject,
+        ]
+        var data = try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys])
         data.append(0x0A)
-        try input.write(contentsOf: data)
+        try writeAll(data, to: stdinHandle)
         return id
+    }
+
+    private func writeAll(_ data: Data, to handle: FileHandle) throws {
+        var offset = 0
+        let fd = handle.fileDescriptor
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
+            while offset < data.count {
+                let written = Darwin.write(fd, base.advanced(by: offset), data.count - offset)
+                if written < 0 {
+                    throw EngineClientError.invalidMessage(detail: "stdin write failed: \(String(cString: strerror(errno)))")
+                }
+                if written == 0 {
+                    throw EngineClientError.invalidMessage(detail: "stdin write returned 0 bytes")
+                }
+                offset += written
+            }
+        }
     }
 
     private func inventoryDatabasePath() -> String {
@@ -314,6 +377,10 @@ final class EngineClient {
         func consider(_ path: String) -> URL? {
             let url = URL(fileURLWithPath: path)
             searched.append(url.path)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
+                return nil
+            }
             return fm.isExecutableFile(atPath: url.path) ? url : nil
         }
 
@@ -326,16 +393,13 @@ final class EngineClient {
             if fm.isExecutableFile(atPath: bundled.path) { return bundled }
         }
 
-        // Same directory as this process (make build copies engine here).
         if let exe = Bundle.main.executableURL?.deletingLastPathComponent() {
             if let url = consider(exe.appendingPathComponent("devhearth").path) { return url }
         }
-        // Process path fallback when Bundle.main is unhelpful for SPM executables.
         let argv0 = CommandLine.arguments[0]
         let argvURL = URL(fileURLWithPath: argv0).deletingLastPathComponent().appendingPathComponent("devhearth")
         if let url = consider(argvURL.path) { return url }
 
-        // Repo-relative defaults from common working directories.
         let cwd = fm.currentDirectoryPath
         let candidates = [
             "\(cwd)/build/devhearth",

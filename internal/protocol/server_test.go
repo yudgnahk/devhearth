@@ -27,6 +27,20 @@ func TestHelloNegotiatesVersions(t *testing.T) {
 	}
 }
 
+func TestBlankLinesAreIgnored(t *testing.T) {
+	input := "\n\n" + `{"jsonrpc":"2.0","id":"1","method":"engine.hello","params":{"protocolVersions":[1],"schemaVersions":[1]}}` + "\n"
+	var output bytes.Buffer
+	if err := NewServer(ServerOptions{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "parse error") {
+		t.Fatalf("blank lines should not produce parse errors: %s", output.String())
+	}
+	if !strings.Contains(output.String(), `"readOnly":true`) {
+		t.Fatalf("expected hello result, got %s", output.String())
+	}
+}
+
 func TestHelloRejectsIncompatibleVersion(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":"1","method":"engine.hello","params":{"protocolVersions":[99],"schemaVersions":[1]}}` + "\n"
 	var output bytes.Buffer

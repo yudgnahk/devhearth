@@ -111,15 +111,46 @@ struct RPCError: Decodable, LocalizedError {
     var errorDescription: String? { "Engine error \(code): \(message)" }
 }
 
+/// JSON-RPC ids may be string or number on the wire.
+struct RPCID: Decodable, Equatable, CustomStringConvertible {
+    let raw: String
+
+    init(_ raw: String) { self.raw = raw }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            raw = value
+            return
+        }
+        if let value = try? container.decode(Int.self) {
+            raw = String(value)
+            return
+        }
+        if container.decodeNil() {
+            raw = ""
+            return
+        }
+        throw DecodingError.typeMismatch(
+            RPCID.self,
+            .init(codingPath: decoder.codingPath, debugDescription: "RPC id must be string or number")
+        )
+    }
+
+    var description: String { raw }
+    var isEmpty: Bool { raw.isEmpty }
+}
+
 struct RPCHeader: Decodable {
     let jsonrpc: String
-    let id: String?
+    let id: RPCID?
     let method: String?
+    let error: RPCError?
 }
 
 struct RPCEnvelope<Result: Decodable>: Decodable {
     let jsonrpc: String
-    let id: String?
+    let id: RPCID?
     let result: Result?
     let error: RPCError?
 }
