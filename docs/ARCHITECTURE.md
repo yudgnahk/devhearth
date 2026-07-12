@@ -142,7 +142,7 @@ Responsibilities:
 Suggested module layout:
 
 ```text
-cmd/devopt/              CLI entry point
+cmd/devhearth/           CLI entry point
 internal/protocol/       Versioned UI protocol
 internal/scan/           Traversal and metadata collection
 internal/detect/         Detector interfaces and registry
@@ -355,11 +355,13 @@ Initial methods:
 
 Mutation methods must be introduced in a later protocol version.
 
+Phase 0 implements only `engine.hello`, mocked `scan.start`, and `scan.progress`. Cancellation, status queries, inventory methods, and exports begin with their owning roadmap phases; accepting a cancellation token in Phase 0 reserves the wire shape but does not imply cancellation support.
+
 ## Repository layout
 
 ```text
 apps/macos/               SwiftUI application
-cmd/devopt/               Go CLI
+cmd/devhearth/            Go CLI
 internal/                 Go engine internals
 pkg/                      Public Go packages only if a real consumer appears
 docs/                     Product and engineering documentation
@@ -388,4 +390,3 @@ Support Apple Silicon first. Keep the Go engine architecture-neutral and avoid u
 | Portfolio fit | Deterministic Go scoring | Multi-factor ranks with stay-put; never absolute “best tool” |
 | AI | Optional explanation layer | Never safety authority or fit-score authority |
 | Rust | Deferred | Add only for a proven hotspot |
-
