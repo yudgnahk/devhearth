@@ -55,10 +55,40 @@ type ScanStarted struct {
 	ScanID string `json:"scanId"`
 }
 
+type ScanCancelParams struct {
+	ScanID string `json:"scanId"`
+}
+type ScanStatusParams struct {
+	ScanID string `json:"scanId"`
+}
+type ReportExportParams struct {
+	ScanID string `json:"scanId"`
+}
+
+type ScanStatus struct {
+	ScanID string `json:"scanId"`
+	Status string `json:"status"`
+}
+
 type ScanProgress struct {
 	ScanID         string `json:"scanId"`
 	Phase          string `json:"phase"`
 	EntriesVisited int64  `json:"entriesVisited"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
 	Complete       bool   `json:"complete"`
+}
+
+type ScanReport struct {
+	ScanID         string             `json:"scanId"`
+	Status         string             `json:"status"`
+	Roots          []string           `json:"roots"`
+	EntriesVisited int64              `json:"entriesVisited"`
+	LogicalBytes   int64              `json:"logicalBytes"`
+	AllocatedBytes int64              `json:"allocatedBytes"`
+	Inaccessible   []InaccessiblePath `json:"inaccessible"`
+}
+
+type InaccessiblePath struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }

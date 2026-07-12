@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/yudgnahk/devhearth/internal/scan"
 )
 
 func TestHelloNegotiatesVersions(t *testing.T) {
@@ -55,6 +57,17 @@ func TestMockScanStreamsProgress(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
 	if len(lines) != 5 || !strings.Contains(lines[len(lines)-1], `"complete":true`) {
 		t.Fatalf("unexpected stream: %s", output.String())
+	}
+}
+
+func TestReportRedactsSelectedPaths(t *testing.T) {
+	active := &activeScan{status: "complete", result: scan.Result{Roots: []string{"/Users/example/Projects"}, Inaccessible: []scan.InaccessiblePath{{Path: "/Users/example/Projects/private", Reason: "permission denied"}}}}
+	report := report("scan_01", active)
+	if report.Roots[0] != "<selected-root-1>" {
+		t.Fatalf("root = %q", report.Roots[0])
+	}
+	if report.Inaccessible[0].Path != "<selected-root-1>/private" {
+		t.Fatalf("inaccessible path = %q", report.Inaccessible[0].Path)
 	}
 }
 

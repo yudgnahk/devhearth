@@ -25,6 +25,7 @@ final class EngineClient {
     private(set) var status = "Engine not started"
     private(set) var progress: [ScanProgress] = []
     private(set) var errorMessage: String?
+    private(set) var isScanning = false
 
     private var process: Process?
     private var input: FileHandle?
@@ -32,15 +33,19 @@ final class EngineClient {
 	private var helloRequestID: String?
 	private var scanRequestID: String?
 	private var activeScanID: String?
+	private var scanRoots: [String] = []
 
-    func start() async {
+    func start(roots: [String]) async {
         do {
+            progress = []
+            errorMessage = nil
+            isScanning = true
+			scanRoots = roots
             let executable = try engineURL()
             let process = Process()
             let stdinPipe = Pipe()
             let stdoutPipe = Pipe()
             process.executableURL = executable
-            process.arguments = ["--mock-scan"]
             process.standardInput = stdinPipe
             process.standardOutput = stdoutPipe
             process.standardError = FileHandle.standardError
@@ -61,6 +66,7 @@ final class EngineClient {
             errorMessage = error.localizedDescription
             status = "Engine unavailable"
         }
+        isScanning = false
     }
 
     func stop() {
@@ -72,6 +78,16 @@ final class EngineClient {
 		}
 		process = nil
     }
+
+	func cancelScan() {
+		guard let activeScanID else { return }
+		do {
+			_ = try send(method: "scan.cancel", params: ScanCancelParams(scanId: activeScanID))
+			status = "Cancelling scan…"
+		} catch {
+			errorMessage = error.localizedDescription
+		}
+	}
 
     private func handle(_ line: String) throws {
         let data = Data(line.utf8)
@@ -87,7 +103,7 @@ final class EngineClient {
                   result.readOnly else { throw EngineClientError.incompatibleEngine }
             status = "Connected to read-only engine"
 			scanRequestID = try send(method: "scan.start", params: ScanStartParams(
-                roots: ["/synthetic/devhearth"], cancellationToken: UUID().uuidString
+                roots: scanRoots, cancellationToken: UUID().uuidString
             ))
             return
         }
@@ -96,7 +112,7 @@ final class EngineClient {
             if let error = started.error { throw error }
 			guard let result = started.result else { throw EngineClientError.invalidMessage }
 			activeScanID = result.scanId
-            status = "Mock scan running"
+            status = "Scan running"
             return
         }
 		guard header.id == nil, header.method == "scan.progress" else {
@@ -107,7 +123,11 @@ final class EngineClient {
 			throw EngineClientError.invalidMessage
 		}
         progress.append(event.params)
-        status = event.params.complete == true ? "Mock scan complete" : "Scanning: \(event.params.phase)"
+        if event.params.complete == true {
+            status = event.params.phase == "complete" ? "Scan complete" : "Scan \(event.params.phase)"
+        } else {
+            status = "Scanning: \(event.params.phase)"
+        }
     }
 
 	@discardableResult

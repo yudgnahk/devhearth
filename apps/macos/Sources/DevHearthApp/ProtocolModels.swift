@@ -30,6 +30,8 @@ struct ScanStartParams: Encodable {
 
 struct ScanStarted: Decodable { let scanId: String }
 
+struct ScanCancelParams: Encodable { let scanId: String }
+
 struct ScanProgress: Decodable {
     let scanId: String
     let phase: String
