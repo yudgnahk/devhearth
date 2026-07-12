@@ -51,10 +51,15 @@ build-engine: ## Build the Go engine binary into build/devhearth
 	$(GO) build -o "$(ENGINE)" ./cmd/devhearth
 	@echo "engine: $(ENGINE)"
 
-build-app: ## Build the SwiftUI executable (SPM debug)
+build-app: build-engine ## Build the SwiftUI executable and place the engine beside it
 	$(SWIFT) build --package-path "$(MACOS_PKG)"
 	@test -x "$(SWIFT_BIN)"
+	@# SPM executables are not app bundles; co-locate the engine so the UI can
+	@# find it without DEVHEARTH_ENGINE_PATH when launched from make run.
+	cp -f "$(ENGINE)" "$(dir $(SWIFT_BIN))devhearth"
+	chmod +x "$(dir $(SWIFT_BIN))devhearth"
 	@echo "app:    $(SWIFT_BIN)"
+	@echo "engine: $(dir $(SWIFT_BIN))devhearth"
 
 ##@ Test
 
@@ -85,9 +90,14 @@ check: vet test-go build ## Lint-ish gate used before PRs (Go-focused)
 run: run-app ## Alias for run-app
 
 run-app: build ## Launch SwiftUI app with the local engine
-	@echo "Launching DevHearth (engine=$(ENGINE))"
-	@echo "Choose a folder in the UI, or cancel and use: make scan ROOT=..."
-	$(ENGINE_ENV) "$(SWIFT_BIN)"
+	@test -x "$(ENGINE)"
+	@test -x "$(dir $(SWIFT_BIN))devhearth"
+	@echo "Launching DevHearth"
+	@echo "  app:    $(SWIFT_BIN)"
+	@echo "  engine: $(ENGINE)"
+	@echo "Status should become 'Engine ready' immediately; then choose a folder."
+	@# Prefer explicit env, with co-located binary as fallback inside the app.
+	cd "$(REPO_ROOT)" && $(ENGINE_ENV) "$(SWIFT_BIN)"
 
 run-engine: build-engine ## Run the engine on stdin/stdout (JSON-RPC)
 	@mkdir -p "$(BUILD_DIR)"

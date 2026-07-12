@@ -9,6 +9,7 @@ struct DevHearthApp: App {
         WindowGroup("DevHearth") {
             ContentView(engine: engine)
                 .frame(minWidth: 720, minHeight: 480)
+                .task { await engine.connect() }
                 .onDisappear { engine.stop() }
         }
     }
@@ -30,13 +31,27 @@ struct ContentView: View {
                     if engine.isScanning {
                         Button("Cancel", role: .cancel) { engine.cancelScan() }
                     }
+                    Button("Retry Engine") {
+                        Task { await engine.connect() }
+                    }
+                    .disabled(engine.isScanning)
                 }
                 HStack {
                     ProgressView(value: engine.progress.last?.complete == true ? 1 : nil)
                     Text(engine.status)
                 }
+                if let path = engine.enginePath {
+                    Text(path)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
                 if let error = engine.errorMessage {
-                    Text(error).foregroundStyle(.red)
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .font(.caption)
                 }
                 List(selection: $selectedAsset) {
                     if !engine.portfolio.isEmpty {
@@ -81,13 +96,18 @@ struct ContentView: View {
             }
         }
         .fileImporter(isPresented: $selectingFolder, allowedContentTypes: [.folder]) { selection in
-            guard case .success(let url) = selection else { return }
-            guard url.startAccessingSecurityScopedResource() else {
-                return
-            }
-            Task {
-                await engine.start(roots: [url.path])
-                url.stopAccessingSecurityScopedResource()
+            switch selection {
+            case .success(let url):
+                let accessed = url.startAccessingSecurityScopedResource()
+                Task {
+                    // Prefer path without file:// encoding surprises.
+                    await engine.start(roots: [url.path])
+                    if accessed {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+            case .failure(let error):
+                engine.reportExternalError(error.localizedDescription)
             }
         }
     }

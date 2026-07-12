@@ -2,19 +2,28 @@ import Foundation
 import Observation
 
 enum EngineClientError: LocalizedError {
-    case engineNotFound
-    case invalidMessage
+    case engineNotFound(searched: [String])
+    case invalidMessage(detail: String)
     case incompatibleEngine
     case incompleteStream
     case engineNotRunning
+    case engineExited(code: Int32)
 
     var errorDescription: String? {
         switch self {
-        case .engineNotFound: "The bundled DevHearth engine could not be found."
-        case .invalidMessage: "The engine returned an invalid protocol message."
-        case .incompatibleEngine: "The engine protocol or schema is incompatible."
-        case .incompleteStream: "The engine closed before the mock scan completed."
-        case .engineNotRunning: "The engine is not running."
+        case .engineNotFound(let searched):
+            let paths = searched.joined(separator: "\n  ")
+            return "Could not find the DevHearth engine. Set DEVHEARTH_ENGINE_PATH or run `make build`.\nSearched:\n  \(paths)"
+        case .invalidMessage(let detail):
+            return "Invalid engine message: \(detail)"
+        case .incompatibleEngine:
+            return "The engine protocol or schema is incompatible."
+        case .incompleteStream:
+            return "The engine closed before the scan completed."
+        case .engineNotRunning:
+            return "The engine is not running."
+        case .engineExited(let code):
+            return "The engine exited unexpectedly (code \(code))."
         }
     }
 }
@@ -22,13 +31,14 @@ enum EngineClientError: LocalizedError {
 @MainActor
 @Observable
 final class EngineClient {
-    private(set) var status = "Engine not started"
+    private(set) var status = "Starting…"
     private(set) var progress: [ScanProgress] = []
     private(set) var assets: [AssetSummary] = []
     private(set) var relationships: [RelationshipSummary] = []
     private(set) var portfolio: [PortfolioSummary] = []
     private(set) var errorMessage: String?
     private(set) var isScanning = false
+    private(set) var enginePath: String?
 
     private var process: Process?
     private var input: FileHandle?
@@ -41,6 +51,29 @@ final class EngineClient {
     private var scanRoots: [String] = []
     private var assetsLoaded = false
     private var portfolioLoaded = false
+    private var mode: SessionMode = .idle
+
+    private enum SessionMode {
+        case idle
+        case probe
+        case scan
+    }
+
+    /// Locate and hello-negotiate the engine without starting a scan.
+    func connect() async {
+        guard !isScanning else { return }
+        do {
+            errorMessage = nil
+            status = "Locating engine…"
+            let executable = try resolveEngineURL()
+            enginePath = executable.path
+            try await runSession(mode: .probe, roots: [])
+            status = "Engine ready · choose a folder to scan"
+        } catch {
+            errorMessage = error.localizedDescription
+            status = "Engine unavailable"
+        }
+    }
 
     func start(roots: [String]) async {
         do {
@@ -53,28 +86,13 @@ final class EngineClient {
             assetsLoaded = false
             portfolioLoaded = false
             scanRoots = roots
-            let executable = try engineURL()
-            let process = Process()
-            let stdinPipe = Pipe()
-            let stdoutPipe = Pipe()
-            process.executableURL = executable
-            process.standardInput = stdinPipe
-            process.standardOutput = stdoutPipe
-            process.standardError = FileHandle.standardError
-            try process.run()
-            self.process = process
-            input = stdinPipe.fileHandleForWriting
-
-            status = "Negotiating protocol…"
-            helloRequestID = try send(method: "engine.hello", params: HelloParams())
-            for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
-                try handle(line)
-                if assetsLoaded && portfolioLoaded { break }
+            status = "Starting scan…"
+            _ = try resolveEngineURL()
+            try await runSession(mode: .scan, roots: roots)
+            if progress.last?.complete != true {
+                throw EngineClientError.incompleteStream
             }
-            guard progress.last?.complete == true else { throw EngineClientError.incompleteStream }
-            stop()
         } catch {
-            stop()
             errorMessage = error.localizedDescription
             status = "Engine unavailable"
         }
@@ -89,6 +107,7 @@ final class EngineClient {
             process?.waitUntilExit()
         }
         process = nil
+        mode = .idle
     }
 
     func cancelScan() {
@@ -101,10 +120,95 @@ final class EngineClient {
         }
     }
 
+    func reportExternalError(_ message: String) {
+        errorMessage = message
+        status = "Engine unavailable"
+    }
+
+    private func runSession(mode sessionMode: SessionMode, roots: [String]) async throws {
+        stop()
+        mode = sessionMode
+        scanRoots = roots
+        nextID = 0
+        helloRequestID = nil
+        scanRequestID = nil
+        assetsRequestID = nil
+        portfolioRequestID = nil
+        activeScanID = nil
+        assetsLoaded = sessionMode == .probe
+        portfolioLoaded = sessionMode == .probe
+
+        let executable = try resolveEngineURL()
+        enginePath = executable.path
+
+        let process = Process()
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.executableURL = executable
+        process.arguments = ["-database", inventoryDatabasePath()]
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        // Prefer a stable cwd so relative fallbacks remain predictable.
+        process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        do {
+            try process.run()
+        } catch {
+            throw EngineClientError.invalidMessage(detail: "failed to launch \(executable.path): \(error.localizedDescription)")
+        }
+        self.process = process
+        input = stdinPipe.fileHandleForWriting
+
+        status = "Negotiating protocol…"
+        helloRequestID = try send(method: "engine.hello", params: HelloParams())
+
+        for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
+            try handle(line)
+            if sessionMode == .probe, helloRequestID == nil {
+                // hello handled and cleared
+                break
+            }
+            if sessionMode == .scan, assetsLoaded, portfolioLoaded {
+                break
+            }
+            if !process.isRunning, !(sessionMode == .scan && assetsLoaded && portfolioLoaded) {
+                let err = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                if !err.isEmpty {
+                    throw EngineClientError.invalidMessage(detail: err.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+                throw EngineClientError.engineExited(code: process.terminationStatus)
+            }
+        }
+
+        if sessionMode == .probe {
+            stop()
+            return
+        }
+
+        // Drain a bit of stderr for diagnostics if the scan ended oddly.
+        if progress.last?.complete != true {
+            let err = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            if process.terminationStatus != 0 {
+                throw EngineClientError.invalidMessage(detail: err.isEmpty ? "scan incomplete" : err)
+            }
+        }
+        stop()
+    }
+
     private func handle(_ line: String) throws {
-        let data = Data(line.utf8)
-        let header = try JSONDecoder().decode(RPCHeader.self, from: data)
-        guard header.jsonrpc == "2.0" else { throw EngineClientError.invalidMessage }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let data = Data(trimmed.utf8)
+        let header: RPCHeader
+        do {
+            header = try JSONDecoder().decode(RPCHeader.self, from: data)
+        } catch {
+            throw EngineClientError.invalidMessage(detail: "header decode failed for: \(trimmed.prefix(200))")
+        }
+        guard header.jsonrpc == "2.0" else {
+            throw EngineClientError.invalidMessage(detail: "bad jsonrpc in \(trimmed.prefix(200))")
+        }
 
         if header.id == helloRequestID {
             let hello = try JSONDecoder().decode(RPCEnvelope<HelloResult>.self, from: data)
@@ -113,6 +217,11 @@ final class EngineClient {
                   result.protocolVersion == protocolVersion,
                   result.schemaVersion == schemaVersion,
                   result.readOnly else { throw EngineClientError.incompatibleEngine }
+            helloRequestID = nil
+            if mode == .probe {
+                status = "Engine ready"
+                return
+            }
             status = "Connected to read-only engine"
             scanRequestID = try send(method: "scan.start", params: ScanStartParams(
                 roots: scanRoots, cancellationToken: UUID().uuidString
@@ -122,7 +231,9 @@ final class EngineClient {
         if header.id == scanRequestID {
             let started = try JSONDecoder().decode(RPCEnvelope<ScanStarted>.self, from: data)
             if let error = started.error { throw error }
-            guard let result = started.result else { throw EngineClientError.invalidMessage }
+            guard let result = started.result else {
+                throw EngineClientError.invalidMessage(detail: "scan.start missing result")
+            }
             activeScanID = result.scanId
             status = "Scan running"
             return
@@ -130,7 +241,9 @@ final class EngineClient {
         if header.id == assetsRequestID {
             let envelope = try JSONDecoder().decode(RPCEnvelope<AssetsListResult>.self, from: data)
             if let error = envelope.error { throw error }
-            guard let result = envelope.result else { throw EngineClientError.invalidMessage }
+            guard let result = envelope.result else {
+                throw EngineClientError.invalidMessage(detail: "assets.list missing result")
+            }
             assets = result.assets
             relationships = result.relationships
             assetsLoaded = true
@@ -140,7 +253,9 @@ final class EngineClient {
         if header.id == portfolioRequestID {
             let envelope = try JSONDecoder().decode(RPCEnvelope<PortfolioListResult>.self, from: data)
             if let error = envelope.error { throw error }
-            guard let result = envelope.result else { throw EngineClientError.invalidMessage }
+            guard let result = envelope.result else {
+                throw EngineClientError.invalidMessage(detail: "portfolio.list missing result")
+            }
             portfolio = result.portfolio
             portfolioLoaded = true
             if assetsLoaded {
@@ -149,11 +264,11 @@ final class EngineClient {
             return
         }
         guard header.id == nil, header.method == "scan.progress" else {
-            throw EngineClientError.invalidMessage
+            throw EngineClientError.invalidMessage(detail: "unexpected message: \(trimmed.prefix(200))")
         }
         let event = try JSONDecoder().decode(ProgressEnvelope.self, from: data)
         guard event.method == "scan.progress", event.params.scanId == activeScanID else {
-            throw EngineClientError.invalidMessage
+            throw EngineClientError.invalidMessage(detail: "progress for unknown scan")
         }
         progress.append(event.params)
         if event.params.complete == true {
@@ -165,12 +280,10 @@ final class EngineClient {
                 assetsLoaded = true
                 portfolioLoaded = true
             }
+        } else if event.params.phase == "detection", let found = event.params.assetsFound {
+            status = "Detecting assets… \(found) found"
         } else {
-            if event.params.phase == "detection", let found = event.params.assetsFound {
-                status = "Detecting assets… \(found) found"
-            } else {
-                status = "Scanning: \(event.params.phase)"
-            }
+            status = "Scanning: \(event.params.phase)"
         }
     }
 
@@ -186,11 +299,54 @@ final class EngineClient {
         return id
     }
 
-    private func engineURL() throws -> URL {
-        if let override = ProcessInfo.processInfo.environment["DEVHEARTH_ENGINE_PATH"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
+    private func inventoryDatabasePath() -> String {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let dir = base.appendingPathComponent("DevHearth", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("inventory.sqlite").path
+    }
+
+    private func resolveEngineURL() throws -> URL {
+        var searched: [String] = []
+        let fm = FileManager.default
+
+        func consider(_ path: String) -> URL? {
+            let url = URL(fileURLWithPath: path)
+            searched.append(url.path)
+            return fm.isExecutableFile(atPath: url.path) ? url : nil
         }
-        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "devhearth") { return bundled }
-        throw EngineClientError.engineNotFound
+
+        if let override = ProcessInfo.processInfo.environment["DEVHEARTH_ENGINE_PATH"], !override.isEmpty {
+            if let url = consider(override) { return url }
+        }
+
+        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "devhearth") {
+            searched.append(bundled.path)
+            if fm.isExecutableFile(atPath: bundled.path) { return bundled }
+        }
+
+        // Same directory as this process (make build copies engine here).
+        if let exe = Bundle.main.executableURL?.deletingLastPathComponent() {
+            if let url = consider(exe.appendingPathComponent("devhearth").path) { return url }
+        }
+        // Process path fallback when Bundle.main is unhelpful for SPM executables.
+        let argv0 = CommandLine.arguments[0]
+        let argvURL = URL(fileURLWithPath: argv0).deletingLastPathComponent().appendingPathComponent("devhearth")
+        if let url = consider(argvURL.path) { return url }
+
+        // Repo-relative defaults from common working directories.
+        let cwd = fm.currentDirectoryPath
+        let candidates = [
+            "\(cwd)/build/devhearth",
+            "\(cwd)/../build/devhearth",
+            "\(cwd)/../../build/devhearth",
+            "\(cwd)/devhearth",
+        ]
+        for path in candidates {
+            if let url = consider((path as NSString).standardizingPath) { return url }
+        }
+
+        throw EngineClientError.engineNotFound(searched: searched)
     }
 }
