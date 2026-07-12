@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct DevHearthApp: App {
@@ -8,7 +9,6 @@ struct DevHearthApp: App {
         WindowGroup("DevHearth") {
             ContentView(engine: engine)
                 .frame(minWidth: 560, minHeight: 360)
-                .task { await engine.start() }
                 .onDisappear { engine.stop() }
         }
     }
@@ -16,11 +16,19 @@ struct DevHearthApp: App {
 
 struct ContentView: View {
     let engine: EngineClient
+    @State private var selectingFolder = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("DevHearth").font(.largeTitle.bold())
-            Text("Phase 0 protocol preview").foregroundStyle(.secondary)
+            Text("Read-only storage inventory").foregroundStyle(.secondary)
+            HStack {
+                Button("Choose Folder to Scan…") { selectingFolder = true }
+                    .disabled(engine.isScanning)
+                if engine.isScanning {
+                    Button("Cancel", role: .cancel) { engine.cancelScan() }
+                }
+            }
             HStack {
                 ProgressView(value: engine.progress.last?.complete == true ? 1 : nil)
                 Text(engine.status)
@@ -39,5 +47,15 @@ struct ContentView: View {
             }
         }
         .padding(24)
+        .fileImporter(isPresented: $selectingFolder, allowedContentTypes: [.folder]) { selection in
+            guard case .success(let url) = selection else { return }
+            guard url.startAccessingSecurityScopedResource() else {
+                return
+            }
+            Task {
+                await engine.start(roots: [url.path])
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
     }
 }
