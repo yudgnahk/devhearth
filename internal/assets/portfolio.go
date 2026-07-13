@@ -48,7 +48,7 @@ func SummarizePortfolio(graph Graph) []PortfolioSummary {
 			}
 			versionManagers[eco][name] = struct{}{}
 		case KindProjectLocalInstall:
-			summary.ProjectLocalBytes++ // count until size attribution is wired
+			summary.ProjectLocalInstallCount++ // bytes deferred until size attribution
 		case KindDependencyStore:
 			summary.SharedStoreCount++
 		case KindDownloadCache:

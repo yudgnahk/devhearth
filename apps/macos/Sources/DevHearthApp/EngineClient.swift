@@ -88,7 +88,7 @@ final class EngineClient {
             status = "Engine ready · choose a folder to scan"
         } catch {
             errorMessage = error.localizedDescription
-            status = "Engine unavailable"
+            status = statusForFailure(error, duringScan: false)
         }
     }
 
@@ -115,7 +115,7 @@ final class EngineClient {
             }
         } catch {
             errorMessage = error.localizedDescription
-            status = "Engine unavailable"
+            status = statusForFailure(error, duringScan: true)
         }
         isScanning = false
     }
@@ -145,11 +145,26 @@ final class EngineClient {
 
     func reportExternalError(_ message: String) {
         errorMessage = message
-        status = "Engine unavailable"
+        status = "Permission required"
+    }
+
+    private func statusForFailure(_ error: Error, duringScan: Bool) -> String {
+        if let clientError = error as? EngineClientError {
+            switch clientError {
+            case .engineNotFound, .incompatibleEngine, .engineNotRunning:
+                return "Engine unavailable"
+            case .engineExited:
+                return "Engine exited"
+            case .incompleteStream, .engineRPC, .invalidMessage:
+                return duringScan ? "Scan failed" : "Engine unavailable"
+            }
+        }
+        return duringScan ? "Scan failed" : "Engine unavailable"
     }
 
     private func runSession(mode sessionMode: SessionMode, roots: [String]) async throws {
         stop()
+        defer { stop() }
         mode = sessionMode
         scanRoots = roots
         nextID = 0
@@ -205,14 +220,12 @@ final class EngineClient {
         }
 
         if sessionMode == .probe {
-            stop()
             return
         }
 
         if progress.last?.complete != true {
             throw EngineClientError.incompleteStream
         }
-        stop()
     }
 
     private func handle(_ line: String) throws {

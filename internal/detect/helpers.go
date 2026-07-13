@@ -1,17 +1,47 @@
 package detect
 
 import (
-	"os"
+	"errors"
 	"path/filepath"
 	"strings"
 
 	"github.com/yudgnahk/devhearth/internal/assets"
 )
 
+// ErrSymlinkRefused is returned when a content open would follow a symlink.
+var ErrSymlinkRefused = errors.New("refusing to follow symlink")
+
 // HasChild reports whether a candidate directory lists name among children.
 func HasChild(candidate Candidate, name string) bool {
 	for _, child := range candidate.Children {
 		if child == name {
+			return true
+		}
+	}
+	return false
+}
+
+// HasParentChild reports whether Parent lists name among its inventory children.
+func HasParentChild(candidate Candidate, name string) bool {
+	for _, child := range candidate.ParentChildren {
+		if child == name {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAnyParentChild reports whether Parent lists any of the given names.
+func HasAnyParentChild(candidate Candidate, names ...string) bool {
+	if len(names) == 0 || len(candidate.ParentChildren) == 0 {
+		return false
+	}
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		wanted[name] = struct{}{}
+	}
+	for _, child := range candidate.ParentChildren {
+		if _, ok := wanted[child]; ok {
 			return true
 		}
 	}
@@ -56,14 +86,29 @@ func DisplayNameFromPath(path string) string {
 	return base
 }
 
-// ReadFileLimited reads at most maxBytes from path. It is for small manifests
-// only and never follows a final symlink target for open when using O_NOFOLLOW
-// is unavailable; callers should only open paths already classified as files.
+// PathHasComponent reports whether path contains a path component equal to name
+// (case-insensitive). It does not match arbitrary substrings inside a component.
+func PathHasComponent(path, name string) bool {
+	if path == "" || name == "" {
+		return false
+	}
+	target := strings.ToLower(name)
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if strings.EqualFold(part, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReadFileLimited reads at most maxBytes from path. It refuses to follow
+// symlinks (O_NOFOLLOW on Darwin/Linux; Lstat guard elsewhere). Callers should
+// only open paths already classified as regular files when possible.
 func ReadFileLimited(path string, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = 64 * 1024
 	}
-	file, err := os.Open(path)
+	file, err := openNoFollow(path)
 	if err != nil {
 		return nil, err
 	}

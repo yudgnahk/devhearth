@@ -106,6 +106,34 @@ func TestAssetsListRedactsPathsAndIncludesEvidence(t *testing.T) {
 	}
 }
 
+func TestAssetsListRedactsAttributePaths(t *testing.T) {
+	active := &activeScan{
+		status: "complete",
+		result: scan.Result{Roots: []string{"/Users/example/Projects"}},
+		graph: assets.Graph{Assets: []assets.Asset{{
+			ID: "wt1", Kind: assets.KindGitWorktree, DisplayName: "feature",
+			Path: "/Users/example/Projects/feature", Risk: assets.RiskInformational,
+			DetectorID: "detect.git", DetectorVersion: 1,
+			Attributes: map[string]string{
+				"git_kind": "worktree",
+				"gitdir":   "/Users/example/Projects/main/.git/worktrees/feature",
+				"tool":     "git",
+			},
+		}}},
+	}
+	listed := assetsList("scan_01", active)
+	attrs := listed.Assets[0].Attributes
+	if attrs["gitdir"] != "<selected-root-1>/main/.git/worktrees/feature" {
+		t.Fatalf("gitdir attribute = %q", attrs["gitdir"])
+	}
+	if attrs["tool"] != "git" {
+		t.Fatalf("non-path attribute should pass through: %#v", attrs)
+	}
+	if strings.Contains(attrs["gitdir"], "/Users/") {
+		t.Fatalf("absolute path leaked in attributes: %#v", attrs)
+	}
+}
+
 func FuzzServerInput(f *testing.F) {
 	f.Add([]byte(`{"jsonrpc":"2.0","id":1,"method":"unknown"}`))
 	f.Fuzz(func(t *testing.T, data []byte) {

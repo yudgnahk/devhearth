@@ -82,6 +82,15 @@ func (d *Detector) Detect(ctx context.Context, candidate detect.Candidate) (dete
 		if !candidate.IsDir {
 			return detect.Result{}, nil
 		}
+		// Require a sibling Python manifest so arbitrary folders named venv are
+		// not promoted to full projects (high false-positive rate otherwise).
+		if !detect.HasAnyParentChild(candidate,
+			"pyproject.toml", "requirements.txt", "Pipfile", "Pipfile.lock",
+			"environment.yml", "environment.yaml", "setup.py", "setup.cfg",
+			"poetry.lock", "uv.lock", "conda-lock.yml", ".python-version",
+		) {
+			return detect.Result{}, nil
+		}
 		envPath := candidate.Path
 		projectDir = candidate.Parent
 		projectKey = detect.ProjectKey(ecosystem, projectDir)

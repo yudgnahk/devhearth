@@ -62,3 +62,45 @@ func TestDetectWorktreeGitdirFile(t *testing.T) {
 		t.Fatalf("links = %#v", result.Links)
 	}
 }
+
+func TestDetectWorktreeRelativeGitdir(t *testing.T) {
+	dir := t.TempDir()
+	mainRepo := filepath.Join(dir, "main")
+	worktree := filepath.Join(dir, "worktree")
+	if err := os.MkdirAll(filepath.Join(mainRepo, ".git", "worktrees", "feature"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitFile := filepath.Join(worktree, ".git")
+	// Common relative form: gitdir: ../main/.git/worktrees/feature
+	relative := filepath.Join("..", "main", ".git", "worktrees", "feature")
+	if err := os.WriteFile(gitFile, []byte("gitdir: "+relative+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	detector := git.New()
+	candidate := detect.Candidate{Path: gitFile, Name: ".git", IsDir: false, Parent: worktree}
+	result, err := detector.Detect(context.Background(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) < 2 {
+		t.Fatalf("expected worktree + main repo findings, got %#v", result.Findings)
+	}
+	var mainFinding detect.Finding
+	for _, finding := range result.Findings {
+		if finding.Kind == assets.KindGitRepository {
+			mainFinding = finding
+		}
+	}
+	if mainFinding.Path != mainRepo {
+		t.Fatalf("main repo path = %q, want %q", mainFinding.Path, mainRepo)
+	}
+	if got := result.Findings[0].Attributes["gitdir"]; got != filepath.Join(mainRepo, ".git", "worktrees", "feature") {
+		t.Fatalf("resolved gitdir = %q", got)
+	}
+	if len(result.Links) != 1 || result.Links[0].Kind != assets.RelWorktreeBelongsToRepo {
+		t.Fatalf("links = %#v", result.Links)
+	}
+}

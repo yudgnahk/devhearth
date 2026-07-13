@@ -56,12 +56,13 @@ func (d *Detector) Detect(ctx context.Context, candidate detect.Candidate) (dete
 	if strings.HasSuffix(name, ".gguf") || strings.HasSuffix(name, ".safetensors") {
 		assetKind = "model_file"
 	}
-	if name == "lora" || strings.Contains(candidate.Path, "lora") {
+	// Match path components (case-insensitive), not raw substrings like "floral".
+	if name == "lora" || detect.PathHasComponent(candidate.Path, "lora") {
 		risk = assets.RiskHigh
 		assetKind = "fine_tune"
 	}
 	finding := detect.StampDetector(detect.Finding{
-		Key: detect.AssetKey(assets.KindAIAsset, candidate.Path),
+		Key:  detect.AssetKey(assets.KindAIAsset, candidate.Path),
 		Kind: assets.KindAIAsset, DisplayName: candidate.Name, Path: candidate.Path,
 		Risk: risk, Ecosystem: ecosystem, Class: assets.ClassAI,
 		Attributes: map[string]string{"ai_kind": assetKind},

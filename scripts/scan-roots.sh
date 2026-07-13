@@ -33,7 +33,8 @@ proc = subprocess.Popen(
     [engine, *engine_args],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
+    # Inherit stderr so verbose engine logs cannot fill a pipe and deadlock.
+    stderr=None,
     text=True,
     bufsize=1,
 )
@@ -45,8 +46,7 @@ def send(msg):
 def read():
     line = proc.stdout.readline()
     if not line:
-        err = proc.stderr.read()
-        raise SystemExit(f"engine closed stdout unexpectedly\n{err}")
+        raise SystemExit("engine closed stdout unexpectedly")
     return json.loads(line)
 
 send({
@@ -98,7 +98,5 @@ for req_id, method in (("3", "assets.list"), ("4", "portfolio.list"), ("5", "rep
 proc.stdin.close()
 proc.wait(timeout=10)
 if proc.returncode not in (0, None):
-    err = proc.stderr.read()
-    if err:
-        print(err, file=sys.stderr)
+    raise SystemExit(f"engine exited with code {proc.returncode}")
 PY

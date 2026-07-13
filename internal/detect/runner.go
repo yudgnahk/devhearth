@@ -59,6 +59,9 @@ func Run(ctx context.Context, registry *Registry, inventory scan.Result, options
 		if candidate.IsDir {
 			candidate.Children = index.children[entry.Path]
 		}
+		if entry.ParentPath != "" {
+			candidate.ParentChildren = index.children[entry.ParentPath]
+		}
 		candidatesSeen++
 		for _, detector := range detectors {
 			if !detector.Match(candidate) {
@@ -126,7 +129,9 @@ func mergeFindings(a, b Finding) Finding {
 	if a.DisplayName == "" {
 		a.DisplayName = b.DisplayName
 	}
-	if a.Risk == "" {
+	if riskRank(b.Risk) > riskRank(a.Risk) {
+		a.Risk = b.Risk
+	} else if a.Risk == "" {
 		a.Risk = b.Risk
 	}
 	if a.Ecosystem == "" {
@@ -143,8 +148,42 @@ func mergeFindings(a, b Finding) Finding {
 			a.Attributes[key] = value
 		}
 	}
-	a.Evidence = append(a.Evidence, b.Evidence...)
+	a.Evidence = mergeEvidence(a.Evidence, b.Evidence)
 	return a
+}
+
+func riskRank(risk assets.Risk) int {
+	switch risk {
+	case assets.RiskProhibited:
+		return 5
+	case assets.RiskHigh:
+		return 4
+	case assets.RiskMedium:
+		return 3
+	case assets.RiskLow:
+		return 2
+	case assets.RiskInformational:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func mergeEvidence(a, b []assets.Evidence) []assets.Evidence {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]assets.Evidence, 0, len(a)+len(b))
+	for _, item := range append(a, b...) {
+		key := item.Kind + "\x00" + item.Value
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func materialize(findings map[string]Finding, links []Link) assets.Graph {
@@ -155,7 +194,10 @@ func materialize(findings map[string]Finding, links []Link) assets.Graph {
 	sort.Strings(keys)
 
 	keyToID := make(map[string]string, len(keys))
-	keyToDetector := make(map[string]struct{ id string; version int }, len(keys))
+	keyToDetector := make(map[string]struct {
+		id      string
+		version int
+	}, len(keys))
 	graph := assets.Graph{Assets: make([]assets.Asset, 0, len(keys))}
 	for _, key := range keys {
 		finding := findings[key]

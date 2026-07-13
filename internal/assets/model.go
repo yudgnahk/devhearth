@@ -101,13 +101,13 @@ const (
 
 // PortfolioSummary aggregates installed tools and usage for an ecosystem.
 type PortfolioSummary struct {
-	Ecosystem            string         `json:"ecosystem"`
-	ProjectCount         int            `json:"projectCount"`
-	PackageManagers      map[string]int `json:"packageManagers,omitempty"`
-	VersionManagers      []string       `json:"versionManagers,omitempty"`
-	ProjectLocalBytes    int64          `json:"projectLocalBytes,omitempty"`
-	SharedStoreCount     int            `json:"sharedStoreCount,omitempty"`
-	DownloadCacheCount   int            `json:"downloadCacheCount,omitempty"`
-	BuildOutputCount     int            `json:"buildOutputCount,omitempty"`
-	DominantPackageTool  string         `json:"dominantPackageTool,omitempty"`
+	Ecosystem                string         `json:"ecosystem"`
+	ProjectCount             int            `json:"projectCount"`
+	PackageManagers          map[string]int `json:"packageManagers,omitempty"`
+	VersionManagers          []string       `json:"versionManagers,omitempty"`
+	ProjectLocalInstallCount int            `json:"projectLocalInstallCount,omitempty"` // size attribution is Phase 2 follow-up
+	SharedStoreCount         int            `json:"sharedStoreCount,omitempty"`
+	DownloadCacheCount       int            `json:"downloadCacheCount,omitempty"`
+	BuildOutputCount         int            `json:"buildOutputCount,omitempty"`
+	DominantPackageTool      string         `json:"dominantPackageTool,omitempty"`
 }

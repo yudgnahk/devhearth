@@ -60,7 +60,7 @@ func (d *Detector) Detect(ctx context.Context, candidate detect.Candidate) (dete
 		risk = assets.RiskMedium
 	}
 	resource := detect.StampDetector(detect.Finding{
-		Key: detect.AssetKey(assets.KindContainerResource, candidate.Path),
+		Key:  detect.AssetKey(assets.KindContainerResource, candidate.Path),
 		Kind: assets.KindContainerResource, DisplayName: candidate.Name, Path: candidate.Path,
 		Risk: risk, Ecosystem: ecosystem, Class: assets.ClassContainer,
 		Attributes: map[string]string{"container_kind": kind},

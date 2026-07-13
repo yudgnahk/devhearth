@@ -99,6 +99,13 @@ struct ContentView: View {
             switch selection {
             case .success(let url):
                 let accessed = url.startAccessingSecurityScopedResource()
+                // Under App Sandbox a false return means no access; for non-sandboxed
+                // SPM/`make run` builds, startAccessing often returns false while the
+                // path is still readable.
+                if !accessed && isAppSandboxed() {
+                    engine.reportExternalError("Could not access the selected folder. Grant folder access and try again.")
+                    return
+                }
                 Task {
                     // Prefer path without file:// encoding surprises.
                     await engine.start(roots: [url.path])
@@ -121,6 +128,11 @@ struct ContentView: View {
             parts.append("VM: \(managers.joined(separator: ", "))")
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// True when the process is running inside App Sandbox (not bare SPM/`make run`).
+    private func isAppSandboxed() -> Bool {
+        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
     }
 }
 

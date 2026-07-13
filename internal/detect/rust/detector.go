@@ -51,9 +51,12 @@ func (d *Detector) Detect(ctx context.Context, candidate detect.Candidate) (dete
 		return detect.Result{}, err
 	}
 	if candidate.Name == "target" && candidate.IsDir {
+		// Require a sibling Cargo.toml so non-Rust "target/" directories
+		// (e.g. deployment targets, generic build folders) are not claimed.
+		if !detect.HasParentChild(candidate, "Cargo.toml") {
+			return detect.Result{}, nil
+		}
 		projectDir := candidate.Parent
-		// Only treat as Cargo build output when a sibling Cargo.toml exists.
-		// Without parent children in this candidate, require Cargo.toml via parent scan.
 		projectKey := detect.ProjectKey(ecosystem, projectDir)
 		build := detect.StampDetector(detect.Finding{
 			Key:         detect.AssetKey(assets.KindBuildOutput, candidate.Path),

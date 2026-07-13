@@ -87,12 +87,18 @@ func (d *Detector) Detect(ctx context.Context, candidate detect.Candidate) (dete
 	line := strings.TrimSpace(string(data))
 	if gitDir, ok := strings.CutPrefix(line, "gitdir:"); ok {
 		gitDir = strings.TrimSpace(gitDir)
+		// Relative gitdir pointers are resolved against the worktree root so
+		// main-repo paths match inventory keys (common: ../main/.git/worktrees/x).
+		if gitDir != "" && !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Clean(filepath.Join(worktreeRoot, gitDir))
+		}
 		finding.Attributes["gitdir"] = gitDir
 		finding.Evidence = append(finding.Evidence, detect.Evidence("gitdir_pointer", gitDir, 0.85))
 		result.Findings[0] = finding
 
 		// Common layout: <repo>/.git/worktrees/<name>
-		if idx := strings.Index(gitDir, string(filepath.Separator)+".git"+string(filepath.Separator)+"worktrees"+string(filepath.Separator)); idx > 0 {
+		marker := string(filepath.Separator) + ".git" + string(filepath.Separator) + "worktrees" + string(filepath.Separator)
+		if idx := strings.Index(gitDir, marker); idx > 0 {
 			mainRepo := gitDir[:idx]
 			mainKey := detect.AssetKey(assets.KindGitRepository, mainRepo)
 			mainFinding := detect.StampDetector(detect.Finding{

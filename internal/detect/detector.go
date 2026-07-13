@@ -27,13 +27,14 @@ type Descriptor struct {
 // Candidate is untrusted scan input. Path is the only required field for
 // metadata detectors; implementations must not mutate the filesystem.
 type Candidate struct {
-	Path     string
-	Name     string
-	Kind     string // directory, file, symlink, other
-	IsDir    bool
-	Parent   string
-	Root     string
-	Children []string // immediate child names when available
+	Path           string
+	Name           string
+	Kind           string // directory, file, symlink, other
+	IsDir          bool
+	Parent         string
+	Root           string
+	Children       []string // immediate child names when this is a directory
+	ParentChildren []string // sibling names under Parent when available from inventory
 }
 
 // Finding is a detector observation before stable asset IDs are assigned.

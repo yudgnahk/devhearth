@@ -63,7 +63,7 @@ func (d *Detector) Detect(ctx context.Context, candidate detect.Candidate) (dete
 		Evidence:   []assets.Evidence{detect.Evidence("path_signature", candidate.Path, 0.9)},
 	}, detectorID, detectorVersion)
 	pm := detect.StampDetector(detect.Finding{
-		Key: detect.AssetKey(assets.KindPackageManager, projectDir+":"+tool),
+		Key:  detect.AssetKey(assets.KindPackageManager, projectDir+":"+tool),
 		Kind: assets.KindPackageManager, DisplayName: tool, Path: projectDir,
 		Risk: assets.RiskInformational, Ecosystem: ecosystem, Class: assets.ClassPackageManager,
 		Attributes: map[string]string{"tool": tool, "scope": "project"},

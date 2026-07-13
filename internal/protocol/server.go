@@ -344,8 +344,21 @@ func summarizeAsset(asset assets.Asset, roots []string) AssetSummary {
 		Path: redactPath(asset.Path, roots), Risk: string(asset.Risk),
 		Ecosystem: asset.Ecosystem, Class: string(asset.Class),
 		DetectorID: asset.DetectorID, DetectorVersion: asset.DetectorVersion,
-		Attributes: asset.Attributes, Evidence: evidence,
+		Attributes: redactAttributes(asset.Attributes, roots), Evidence: evidence,
 	}
+}
+
+// redactAttributes redacts any attribute value that looks like a filesystem path
+// (e.g. gitdir absolute paths from worktree detection).
+func redactAttributes(attrs map[string]string, roots []string) map[string]string {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(attrs))
+	for key, value := range attrs {
+		out[key] = redactEvidenceValue(value, roots)
+	}
+	return out
 }
 
 func toProtocolPortfolio(items []assets.PortfolioSummary) []PortfolioSummary {
