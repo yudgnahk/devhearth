@@ -9,8 +9,8 @@
 - [x] Persist scans and filesystem metadata locally in SQLite with schema migration coverage.
 - [x] Add protocol support for scan start, cancellation, status, progress, and redacted JSON summary export.
 - [x] Display live scan progress and a cancellation control in the macOS preview UI.
-- [ ] Add a directory drill-down backed by persisted aggregates.
-- [ ] Add a user-directed JSON file export flow and default path redaction.
+- [x] Add a directory drill-down backed by persisted aggregates.
+- [x] Add a user-directed JSON file export flow and default path redaction.
 - [ ] Add resumable scan checkpoints and pause/resume.
 - [ ] Validate the folder access flow in a signed Xcode app bundle with security-scoped bookmarks.
 

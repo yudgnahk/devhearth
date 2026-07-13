@@ -30,11 +30,11 @@ Status: In progress. The foundations are implemented; bundled-engine packaging a
 
 Exit criteria: The app can scan selected developer roots reliably and explain inaccessible or uncertain storage.
 
-Status: In progress. The first read-only inventory slice provides selected-folder
-scans, metadata-only traversal, local SQLite persistence, progress,
-cancellation, and protocol-level JSON summaries. Directory drill-down,
-user-directed report files, resumable checkpoints, and signed-app permission
-validation remain. See [the Phase 1 task list](PHASE_1_TASKS.md).
+Status: In progress. Selected-folder scans, metadata traversal, SQLite
+persistence (including directory aggregates), progress/cancellation, asset
+graph hand-off, inventory drill-down (`inventory.children`), and user-directed
+redacted JSON report export are in place. Resumable checkpoints and signed-app
+permission validation remain. See [the Phase 1 task list](PHASE_1_TASKS.md).
 
 ## Phase 2 — Development asset graph
 

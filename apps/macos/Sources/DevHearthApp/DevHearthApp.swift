@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 @main
 struct DevHearthApp: App {
@@ -8,7 +9,7 @@ struct DevHearthApp: App {
     var body: some Scene {
         WindowGroup("DevHearth") {
             ContentView(engine: engine)
-                .frame(minWidth: 720, minHeight: 480)
+                .frame(minWidth: 900, minHeight: 560)
                 .task { await engine.connect() }
                 .onDisappear { engine.stop() }
         }
@@ -19,12 +20,20 @@ struct ContentView: View {
     let engine: EngineClient
     @State private var selectingFolder = false
     @State private var selectedAsset: AssetSummary?
+    @State private var detailTab: DetailTab = .inventory
+    @State private var exportError: String?
+
+    private enum DetailTab: String, CaseIterable, Identifiable {
+        case inventory = "Inventory"
+        case assets = "Assets"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 18) {
                 Text("DevHearth").font(.largeTitle.bold())
-                Text("Read-only development asset graph").foregroundStyle(.secondary)
+                Text("Read-only inventory and asset graph").foregroundStyle(.secondary)
                 HStack {
                     Button("Choose Folder to Scan…") { selectingFolder = true }
                         .disabled(engine.isScanning)
@@ -35,6 +44,10 @@ struct ContentView: View {
                         Task { await engine.connect() }
                     }
                     .disabled(engine.isScanning)
+                    Button("Export JSON…") {
+                        Task { await exportJSON() }
+                    }
+                    .disabled(!engine.hasCompletedScan || engine.isScanning)
                 }
                 HStack {
                     ProgressView(value: engine.progress.last?.complete == true ? 1 : nil)
@@ -52,6 +65,24 @@ struct ContentView: View {
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
                         .font(.caption)
+                }
+                if let exportError {
+                    Text(exportError)
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                }
+                if let report = engine.lastReport {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Scan overview").font(.headline)
+                        Text("\(report.entriesVisited) entries · \(ByteCountFormatter.string(fromByteCount: report.allocatedBytes, countStyle: .file)) allocated")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let inaccessible = report.inaccessible, !inaccessible.isEmpty {
+                            Text("\(inaccessible.count) inaccessible path(s)")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
                 }
                 List(selection: $selectedAsset) {
                     if !engine.portfolio.isEmpty {
@@ -83,32 +114,44 @@ struct ContentView: View {
             .padding(16)
             .navigationSplitViewColumnWidth(min: 280, ideal: 340)
         } detail: {
-            if let asset = selectedAsset {
-                AssetDetailView(asset: asset, relationships: engine.relationships.filter {
-                    $0.sourceId == asset.id || $0.targetId == asset.id
-                })
-            } else {
-                ContentUnavailableView(
-                    "Select an asset",
-                    systemImage: "point.3.connected.trianglepath.dotted",
-                    description: Text("Scan a folder to inspect detected projects, tools, stores, and evidence.")
-                )
+            VStack(spacing: 0) {
+                Picker("Detail", selection: $detailTab) {
+                    ForEach(DetailTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding()
+
+                switch detailTab {
+                case .inventory:
+                    DirectoryBrowserView(engine: engine)
+                case .assets:
+                    if let asset = selectedAsset {
+                        AssetDetailView(asset: asset, relationships: engine.relationships.filter {
+                            $0.sourceId == asset.id || $0.targetId == asset.id
+                        })
+                    } else {
+                        ContentUnavailableView(
+                            "Select an asset",
+                            systemImage: "point.3.connected.trianglepath.dotted",
+                            description: Text("Scan a folder, then pick an asset from the sidebar.")
+                        )
+                    }
+                }
             }
         }
         .fileImporter(isPresented: $selectingFolder, allowedContentTypes: [.folder]) { selection in
             switch selection {
             case .success(let url):
                 let accessed = url.startAccessingSecurityScopedResource()
-                // Under App Sandbox a false return means no access; for non-sandboxed
-                // SPM/`make run` builds, startAccessing often returns false while the
-                // path is still readable.
                 if !accessed && isAppSandboxed() {
                     engine.reportExternalError("Could not access the selected folder. Grant folder access and try again.")
                     return
                 }
                 Task {
-                    // Prefer path without file:// encoding surprises.
                     await engine.start(roots: [url.path])
+                    detailTab = .inventory
                     if accessed {
                         url.stopAccessingSecurityScopedResource()
                     }
@@ -116,6 +159,28 @@ struct ContentView: View {
             case .failure(let error):
                 engine.reportExternalError(error.localizedDescription)
             }
+        }
+    }
+
+    private func exportJSON() async {
+        exportError = nil
+        do {
+            let report = try await engine.exportReport()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(report)
+
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "devhearth-report-\(report.scanId).json"
+            panel.canCreateDirectories = true
+            panel.title = "Export redacted scan report"
+            panel.message = "Paths are redacted relative to selected roots by default."
+
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try data.write(to: url, options: .atomic)
+        } catch {
+            exportError = error.localizedDescription
         }
     }
 
@@ -133,6 +198,110 @@ struct ContentView: View {
     /// True when the process is running inside App Sandbox (not bare SPM/`make run`).
     private func isAppSandboxed() -> Bool {
         ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+    }
+}
+
+struct DirectoryBrowserView: View {
+    let engine: EngineClient
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Button {
+                    Task { await engine.navigateUp() }
+                } label: {
+                    Label("Up", systemImage: "chevron.up")
+                }
+                // At the synthetic roots listing, pathKey is empty and there is no parent.
+                .disabled(!engine.hasCompletedScan || (engine.directoryPathKey.isEmpty && engine.directoryParentKey == nil))
+
+                Text(engine.directoryPath.isEmpty ? "Scan roots" : engine.directoryPath)
+                    .font(.headline)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                Spacer()
+                Text("\(engine.directoryChildren.count) items")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            if !engine.hasCompletedScan {
+                ContentUnavailableView(
+                    "No inventory yet",
+                    systemImage: "folder",
+                    description: Text("Scan a developer folder to drill into directory sizes.")
+                )
+            } else if engine.directoryChildren.isEmpty {
+                ContentUnavailableView(
+                    "Empty directory",
+                    systemImage: "folder",
+                    description: Text("No child entries under this path.")
+                )
+            } else {
+                Table(engine.directoryChildren) {
+                    TableColumn("Name") { (child: DirectoryChild) in
+                        HStack(spacing: 6) {
+                            Image(systemName: iconName(for: child))
+                                .foregroundStyle(child.isDirectory ? .blue : .secondary)
+                            if child.isDirectory {
+                                Button(child.name) {
+                                    Task { await engine.navigateInto(child) }
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.primary)
+                            } else {
+                                Text(child.name)
+                            }
+                        }
+                    }
+                    .width(min: 160, ideal: 240)
+
+                    TableColumn("Kind") { child in
+                        Text(child.kind)
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(80)
+
+                    TableColumn("Size") { child in
+                        Text(ByteCountFormatter.string(fromByteCount: child.totalAllocatedBytes, countStyle: .file))
+                            .monospacedDigit()
+                    }
+                    .width(100)
+
+                    TableColumn("Logical") { child in
+                        Text(ByteCountFormatter.string(fromByteCount: child.totalLogicalBytes, countStyle: .file))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(100)
+
+                    TableColumn("Children") { child in
+                        Text(child.directChildCount.map(String.init) ?? "—")
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(70)
+
+                    TableColumn("Path") { child in
+                        Text(child.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                    }
+                    .width(min: 160, ideal: 280)
+                }
+            }
+        }
+    }
+
+    private func iconName(for child: DirectoryChild) -> String {
+        if child.isSymlink == true { return "link" }
+        if child.isDirectory { return "folder.fill" }
+        return "doc"
     }
 }
 

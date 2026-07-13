@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -118,7 +119,10 @@ func (s *Store) Save(ctx context.Context, result scan.Result, graph assets.Graph
 		return "", err
 	}
 	pathToEntryID := make(map[string]int64, len(result.Entries))
-	for _, entry := range result.Entries {
+	// Insert in path-length order so parents exist before children when we patch parent_id.
+	entries := append([]scan.Entry(nil), result.Entries...)
+	sortEntriesByPathDepth(entries)
+	for _, entry := range entries {
 		volumeID, found := volumeIDs[entry.DeviceID]
 		if !found {
 			statement.Close()
@@ -138,6 +142,24 @@ func (s *Store) Save(ctx context.Context, result scan.Result, graph assets.Graph
 	}
 	statement.Close()
 
+	// Wire parent_id for directory drill-down queries against persisted inventory.
+	for _, entry := range entries {
+		if entry.ParentPath == "" {
+			continue
+		}
+		parentID, ok := pathToEntryID[entry.ParentPath]
+		if !ok {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE filesystem_entries SET parent_id = ? WHERE scan_id = ? AND path = ?`, parentID, scanID, entry.Path); err != nil {
+			return "", err
+		}
+	}
+
+	if err := insertDirectoryAggregates(ctx, tx, scanID, result); err != nil {
+		return "", err
+	}
+
 	if err := insertGraph(ctx, tx, scanID, graph, pathToEntryID); err != nil {
 		return "", err
 	}
@@ -145,6 +167,63 @@ func (s *Store) Save(ctx context.Context, result scan.Result, graph assets.Graph
 		return "", err
 	}
 	return scanID, nil
+}
+
+func sortEntriesByPathDepth(entries []scan.Entry) {
+	sort.Slice(entries, func(i, j int) bool {
+		di := strings.Count(entries[i].Path, string(filepath.Separator))
+		dj := strings.Count(entries[j].Path, string(filepath.Separator))
+		if di != dj {
+			return di < dj
+		}
+		return entries[i].Path < entries[j].Path
+	})
+}
+
+func insertDirectoryAggregates(ctx context.Context, tx *sql.Tx, scanID string, result scan.Result) error {
+	index := scan.BuildDirectoryIndex(result)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO directory_aggregates(scan_id, path, parent_path, name, kind, logical_bytes, allocated_bytes, total_logical_bytes, total_allocated_bytes, direct_child_count, is_symlink) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	seen := map[string]struct{}{}
+	for _, nodes := range index {
+		for _, node := range nodes {
+			if _, ok := seen[node.Path]; ok {
+				continue
+			}
+			seen[node.Path] = struct{}{}
+			isSymlink := 0
+			if node.IsSymlink {
+				isSymlink = 1
+			}
+			if _, err := stmt.ExecContext(ctx, scanID, node.Path, node.ParentPath, node.Name, node.Kind, node.LogicalBytes, node.AllocatedBytes, node.TotalLogicalBytes, node.TotalAllocatedBytes, node.DirectChildCount, isSymlink); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ListDirectoryChildren returns direct children for a persisted scan (absolute paths).
+func (s *Store) ListDirectoryChildren(ctx context.Context, scanID, parentPath string) ([]scan.DirectoryNode, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT path, parent_path, name, kind, logical_bytes, allocated_bytes, total_logical_bytes, total_allocated_bytes, direct_child_count, is_symlink FROM directory_aggregates WHERE scan_id = ? AND parent_path = ? ORDER BY kind = 'directory' DESC, name COLLATE NOCASE`, scanID, parentPath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []scan.DirectoryNode
+	for rows.Next() {
+		var node scan.DirectoryNode
+		var isSymlink int
+		if err := rows.Scan(&node.Path, &node.ParentPath, &node.Name, &node.Kind, &node.LogicalBytes, &node.AllocatedBytes, &node.TotalLogicalBytes, &node.TotalAllocatedBytes, &node.DirectChildCount, &isSymlink); err != nil {
+			return nil, err
+		}
+		node.IsSymlink = isSymlink == 1
+		result = append(result, node)
+	}
+	return result, rows.Err()
 }
 
 func insertGraph(ctx context.Context, tx *sql.Tx, scanID string, graph assets.Graph, pathToEntryID map[string]int64) error {

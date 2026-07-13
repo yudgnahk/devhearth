@@ -341,6 +341,7 @@ Initial methods:
 - `scan.start`
 - `scan.cancel`
 - `scan.status`
+- `inventory.children` (directory drill-down; redacted display paths + session `pathKey`)
 - `assets.list`
 - `assets.get`
 - `portfolio.list`
@@ -349,7 +350,7 @@ Initial methods:
 - `fit.get`
 - `recommendations.list`
 - `recommendations.get`
-- `report.export`
+- `report.export` (redacted summary; UI writes the user-chosen JSON file)
 - `policy.validate`
 - `policy.export`
 

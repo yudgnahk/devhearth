@@ -45,6 +45,25 @@ struct AssetsListParams: Encodable { let scanId: String }
 
 struct PortfolioListParams: Encodable { let scanId: String }
 
+struct ReportExportParams: Encodable { let scanId: String }
+
+struct InventoryChildrenParams: Encodable {
+    let scanId: String
+    let pathKey: String?
+
+    enum CodingKeys: String, CodingKey {
+        case scanId, pathKey
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(scanId, forKey: .scanId)
+        if let pathKey, !pathKey.isEmpty {
+            try container.encode(pathKey, forKey: .pathKey)
+        }
+    }
+}
+
 struct EvidenceSummary: Decodable, Identifiable, Hashable {
     var id: String { "\(kind):\(value):\(confidence)" }
     let kind: String
@@ -87,7 +106,7 @@ struct AssetsListResult: Decodable {
     let relationships: [RelationshipSummary]
 }
 
-struct PortfolioSummary: Decodable, Identifiable, Hashable {
+struct PortfolioSummary: Codable, Identifiable, Hashable {
     var id: String { ecosystem }
     let ecosystem: String
     let projectCount: Int
@@ -102,6 +121,48 @@ struct PortfolioSummary: Decodable, Identifiable, Hashable {
 struct PortfolioListResult: Decodable {
     let scanId: String
     let portfolio: [PortfolioSummary]
+}
+
+struct DirectoryChild: Decodable, Identifiable, Hashable {
+    var id: String { pathKey }
+    let name: String
+    let path: String
+    let pathKey: String
+    let kind: String
+    let logicalBytes: Int64
+    let allocatedBytes: Int64
+    let totalLogicalBytes: Int64
+    let totalAllocatedBytes: Int64
+    let directChildCount: Int?
+    let isSymlink: Bool?
+
+    var isDirectory: Bool { kind == "directory" }
+}
+
+struct InventoryChildrenResult: Decodable {
+    let scanId: String
+    let pathKey: String?
+    let path: String
+    let parentKey: String?
+    let children: [DirectoryChild]
+}
+
+struct InaccessiblePath: Codable, Hashable {
+    let path: String
+    let reason: String
+}
+
+struct ScanReport: Codable {
+    let scanId: String
+    let status: String
+    let roots: [String]
+    let entriesVisited: Int64
+    let logicalBytes: Int64
+    let allocatedBytes: Int64
+    let inaccessible: [InaccessiblePath]?
+    let assetCount: Int?
+    let assetsByKind: [String: Int]?
+    let portfolio: [PortfolioSummary]?
 }
 
 struct RPCError: Decodable, LocalizedError {

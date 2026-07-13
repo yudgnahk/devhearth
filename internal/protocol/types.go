@@ -65,6 +65,14 @@ type ReportExportParams struct {
 	ScanID string `json:"scanId"`
 }
 
+// InventoryChildrenParams lists direct children under a directory for drill-down.
+// PathKey is the absolute session-local path from a previous response (empty for roots).
+// Paths are never logged by the server.
+type InventoryChildrenParams struct {
+	ScanID  string `json:"scanId"`
+	PathKey string `json:"pathKey,omitempty"`
+}
+
 type AssetsListParams struct {
 	ScanID string `json:"scanId"`
 }
@@ -164,4 +172,26 @@ type PortfolioSummary struct {
 type PortfolioListResult struct {
 	ScanID    string             `json:"scanId"`
 	Portfolio []PortfolioSummary `json:"portfolio"`
+}
+
+// DirectoryChild is one inventory row for directory drill-down (redacted display path).
+type DirectoryChild struct {
+	Name                string `json:"name"`
+	Path                string `json:"path"`    // redacted for display / export
+	PathKey             string `json:"pathKey"` // absolute path for subsequent inventory.children calls
+	Kind                string `json:"kind"`
+	LogicalBytes        int64  `json:"logicalBytes"`
+	AllocatedBytes      int64  `json:"allocatedBytes"`
+	TotalLogicalBytes   int64  `json:"totalLogicalBytes"`
+	TotalAllocatedBytes int64  `json:"totalAllocatedBytes"`
+	DirectChildCount    int    `json:"directChildCount,omitempty"`
+	IsSymlink           bool   `json:"isSymlink,omitempty"`
+}
+
+type InventoryChildrenResult struct {
+	ScanID    string           `json:"scanId"`
+	PathKey   string           `json:"pathKey,omitempty"`
+	Path      string           `json:"path"` // redacted parent path
+	ParentKey string           `json:"parentKey,omitempty"`
+	Children  []DirectoryChild `json:"children"`
 }

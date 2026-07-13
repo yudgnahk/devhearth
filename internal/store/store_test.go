@@ -46,6 +46,20 @@ func TestSavePersistsInventoryAndAssets(t *testing.T) {
 	if count != 3 {
 		t.Fatalf("entries = %d, want 3", count)
 	}
+	var parented int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM filesystem_entries WHERE scan_id = ? AND parent_id IS NOT NULL`, id).Scan(&parented); err != nil {
+		t.Fatal(err)
+	}
+	if parented != 2 {
+		t.Fatalf("parented entries = %d, want 2", parented)
+	}
+	children, err := database.ListDirectoryChildren(context.Background(), id, "/fixtures")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("directory children = %#v", children)
+	}
 	listed, err := database.ListAssets(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +94,7 @@ func TestMigrationAppliesAssetGraphColumns(t *testing.T) {
 	if err := database.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version < 3 {
-		t.Fatalf("schema version = %d, want >= 3", version)
+	if version < 4 {
+		t.Fatalf("schema version = %d, want >= 4", version)
 	}
 }
