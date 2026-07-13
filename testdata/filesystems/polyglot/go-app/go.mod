@@ -1,3 +1,3 @@
-module example.invalid/synthetic
+module example.com/go-app
 
-go 1.24
+go 1.22

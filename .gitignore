@@ -2,3 +2,6 @@
 .swiftpm/
 .build/
 apps/macos/.build/
+build/
+*.sqlite
+*.sqlite-*

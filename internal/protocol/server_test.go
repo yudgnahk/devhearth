@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/scan"
 )
 
@@ -23,6 +24,20 @@ func TestHelloNegotiatesVersions(t *testing.T) {
 	result, ok := response.Result.(map[string]any)
 	if !ok || result["readOnly"] != true || result["protocolVersion"] != float64(1) {
 		t.Fatalf("unexpected result: %#v", response.Result)
+	}
+}
+
+func TestBlankLinesAreIgnored(t *testing.T) {
+	input := "\n\n" + `{"jsonrpc":"2.0","id":"1","method":"engine.hello","params":{"protocolVersions":[1],"schemaVersions":[1]}}` + "\n"
+	var output bytes.Buffer
+	if err := NewServer(ServerOptions{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "parse error") {
+		t.Fatalf("blank lines should not produce parse errors: %s", output.String())
+	}
+	if !strings.Contains(output.String(), `"readOnly":true`) {
+		t.Fatalf("expected hello result, got %s", output.String())
 	}
 }
 
@@ -68,6 +83,54 @@ func TestReportRedactsSelectedPaths(t *testing.T) {
 	}
 	if report.Inaccessible[0].Path != "<selected-root-1>/private" {
 		t.Fatalf("inaccessible path = %q", report.Inaccessible[0].Path)
+	}
+}
+
+func TestAssetsListRedactsPathsAndIncludesEvidence(t *testing.T) {
+	active := &activeScan{
+		status: "complete",
+		result: scan.Result{Roots: []string{"/Users/example/Projects"}},
+		graph: assets.Graph{Assets: []assets.Asset{{
+			ID: "a1", Kind: assets.KindProject, DisplayName: "app",
+			Path: "/Users/example/Projects/app", Risk: assets.RiskInformational,
+			Ecosystem: "node", DetectorID: "detect.node", DetectorVersion: 1,
+			Evidence: []assets.Evidence{{Kind: "path_signature", Value: "/Users/example/Projects/app/package.json", Confidence: 0.9}},
+		}}},
+	}
+	listed := assetsList("scan_01", active)
+	if listed.Assets[0].Path != "<selected-root-1>/app" {
+		t.Fatalf("path = %q", listed.Assets[0].Path)
+	}
+	if listed.Assets[0].Evidence[0].Value != "<selected-root-1>/app/package.json" {
+		t.Fatalf("evidence = %q", listed.Assets[0].Evidence[0].Value)
+	}
+}
+
+func TestAssetsListRedactsAttributePaths(t *testing.T) {
+	active := &activeScan{
+		status: "complete",
+		result: scan.Result{Roots: []string{"/Users/example/Projects"}},
+		graph: assets.Graph{Assets: []assets.Asset{{
+			ID: "wt1", Kind: assets.KindGitWorktree, DisplayName: "feature",
+			Path: "/Users/example/Projects/feature", Risk: assets.RiskInformational,
+			DetectorID: "detect.git", DetectorVersion: 1,
+			Attributes: map[string]string{
+				"git_kind": "worktree",
+				"gitdir":   "/Users/example/Projects/main/.git/worktrees/feature",
+				"tool":     "git",
+			},
+		}}},
+	}
+	listed := assetsList("scan_01", active)
+	attrs := listed.Assets[0].Attributes
+	if attrs["gitdir"] != "<selected-root-1>/main/.git/worktrees/feature" {
+		t.Fatalf("gitdir attribute = %q", attrs["gitdir"])
+	}
+	if attrs["tool"] != "git" {
+		t.Fatalf("non-path attribute should pass through: %#v", attrs)
+	}
+	if strings.Contains(attrs["gitdir"], "/Users/") {
+		t.Fatalf("absolute path leaked in attributes: %#v", attrs)
 	}
 }
 

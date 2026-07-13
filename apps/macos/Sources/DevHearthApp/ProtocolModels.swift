@@ -37,7 +37,71 @@ struct ScanProgress: Decodable {
     let phase: String
     let entriesVisited: Int64
     let allocatedBytes: Int64
+    let assetsFound: Int64?
     let complete: Bool?
+}
+
+struct AssetsListParams: Encodable { let scanId: String }
+
+struct PortfolioListParams: Encodable { let scanId: String }
+
+struct EvidenceSummary: Decodable, Identifiable, Hashable {
+    var id: String { "\(kind):\(value):\(confidence)" }
+    let kind: String
+    let value: String
+    let confidence: Double
+}
+
+struct AssetSummary: Decodable, Identifiable, Hashable {
+    let id: String
+    let kind: String
+    let displayName: String
+    let path: String
+    let risk: String
+    let ecosystem: String?
+    let classification: String?
+    let detectorId: String
+    let detectorVersion: Int
+    let evidence: [EvidenceSummary]?
+
+    // Wire field is "class"; Swift reserves that keyword.
+    enum CodingKeys: String, CodingKey {
+        case id, kind, displayName, path, risk, ecosystem
+        case classification = "class"
+        case detectorId, detectorVersion, evidence
+    }
+}
+
+struct RelationshipSummary: Decodable, Identifiable, Hashable {
+    let id: String
+    let sourceId: String
+    let targetId: String
+    let kind: String
+    let confidence: Double
+    let detectorId: String?
+}
+
+struct AssetsListResult: Decodable {
+    let scanId: String
+    let assets: [AssetSummary]
+    let relationships: [RelationshipSummary]
+}
+
+struct PortfolioSummary: Decodable, Identifiable, Hashable {
+    var id: String { ecosystem }
+    let ecosystem: String
+    let projectCount: Int
+    let packageManagers: [String: Int]?
+    let versionManagers: [String]?
+    let sharedStoreCount: Int?
+    let downloadCacheCount: Int?
+    let buildOutputCount: Int?
+    let dominantPackageTool: String?
+}
+
+struct PortfolioListResult: Decodable {
+    let scanId: String
+    let portfolio: [PortfolioSummary]
 }
 
 struct RPCError: Decodable, LocalizedError {
@@ -47,15 +111,46 @@ struct RPCError: Decodable, LocalizedError {
     var errorDescription: String? { "Engine error \(code): \(message)" }
 }
 
+/// JSON-RPC ids may be string or number on the wire.
+struct RPCID: Decodable, Equatable, CustomStringConvertible {
+    let raw: String
+
+    init(_ raw: String) { self.raw = raw }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            raw = value
+            return
+        }
+        if let value = try? container.decode(Int.self) {
+            raw = String(value)
+            return
+        }
+        if container.decodeNil() {
+            raw = ""
+            return
+        }
+        throw DecodingError.typeMismatch(
+            RPCID.self,
+            .init(codingPath: decoder.codingPath, debugDescription: "RPC id must be string or number")
+        )
+    }
+
+    var description: String { raw }
+    var isEmpty: Bool { raw.isEmpty }
+}
+
 struct RPCHeader: Decodable {
     let jsonrpc: String
-    let id: String?
+    let id: RPCID?
     let method: String?
+    let error: RPCError?
 }
 
 struct RPCEnvelope<Result: Decodable>: Decodable {
     let jsonrpc: String
-    let id: String?
+    let id: RPCID?
     let result: Result?
     let error: RPCError?
 }
