@@ -97,7 +97,10 @@ type ScanProgress struct {
 	EntriesVisited int64  `json:"entriesVisited"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
 	AssetsFound    int64  `json:"assetsFound,omitempty"`
-	Complete       bool   `json:"complete"`
+	// RowsWritten/RowsTotal report durable inventory rows during phase "persist".
+	RowsWritten int64 `json:"rowsWritten,omitempty"`
+	RowsTotal   int64 `json:"rowsTotal,omitempty"`
+	Complete    bool  `json:"complete"`
 }
 
 type ScanReport struct {

@@ -385,6 +385,12 @@ final class EngineClient {
                     }
                 } else if event.params.phase == "detection", let found = event.params.assetsFound {
                     status = "Detecting assets… \(found) found"
+                } else if event.params.phase == "persist" {
+                    if let written = event.params.rowsWritten, let total = event.params.rowsTotal, total > 0 {
+                        status = "Saving inventory… \(written)/\(total)"
+                    } else {
+                        status = "Saving inventory…"
+                    }
                 } else {
                     status = "Scanning: \(event.params.phase)"
                 }

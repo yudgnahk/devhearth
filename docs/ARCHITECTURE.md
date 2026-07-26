@@ -166,6 +166,7 @@ Suggested Go technologies:
 - Standard library traversal as the baseline; benchmark before adopting a specialized walker.
 - `golang.org/x/sys/unix` for Darwin metadata not exposed by the standard library.
 - SQLite in WAL mode. Prefer a pure-Go driver if profiling shows acceptable behavior; otherwise evaluate a cgo-backed driver for the packaged macOS build.
+- Persist scans with multi-row inserts, parent ids written at insert time, and optional progress (`scan.progress` phase `persist`). Durable inventory omits interiors of high-fanout trees (`node_modules`, `.git`, build outputs, etc.) while keeping the marker directories and asset paths; the live session still uses the full in-memory inventory for drill-down.
 - Native `git` subprocess calls for authoritative advanced status in the first version, behind an interface. Avoid reimplementing all Git semantics prematurely.
 - `encoding/json` for protocol compatibility; optimize serialization only if profiles justify it.
 - `slog` for structured engine logging.

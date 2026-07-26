@@ -53,11 +53,14 @@ func main() {
 			}
 			return detect.Run(ctx, registry, result, detect.RunOptions{Progress: progress})
 		},
-		OnComplete: func(ctx context.Context, result scan.Result, graph assets.Graph, status string) error {
+		OnComplete: func(ctx context.Context, result scan.Result, graph assets.Graph, status string, dirIndex map[string][]scan.DirectoryNode, progress func(written, total int64)) error {
 			if inventory == nil {
 				return nil
 			}
-			_, err := inventory.Save(ctx, result, graph, status)
+			_, err := inventory.SaveWithOptions(ctx, result, graph, status, store.SaveOptions{
+				DirectoryIndex: dirIndex,
+				Progress:       progress,
+			})
 			return err
 		},
 	})

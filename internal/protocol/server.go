@@ -21,11 +21,14 @@ import (
 )
 
 type ServerOptions struct {
-	MockScan   bool
-	Logger     *slog.Logger
-	Inventory  func(context.Context, []string, func(scan.Progress)) (scan.Result, error)
-	Detect     func(context.Context, scan.Result, func(detect.Progress)) (assets.Graph, error)
-	OnComplete func(context.Context, scan.Result, assets.Graph, string) error
+	MockScan  bool
+	Logger    *slog.Logger
+	Inventory func(context.Context, []string, func(scan.Progress)) (scan.Result, error)
+	Detect    func(context.Context, scan.Result, func(detect.Progress)) (assets.Graph, error)
+	// OnComplete persists a finished scan. progress may be nil; when non-nil it
+	// reports durable rows written so far (written/total) during persistence.
+	// dirIndex is the precomputed inventory rollup for this result (may be empty).
+	OnComplete func(ctx context.Context, result scan.Result, graph assets.Graph, status string, dirIndex map[string][]scan.DirectoryNode, progress func(written, total int64)) error
 }
 
 type Server struct {
@@ -286,17 +289,30 @@ func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID stri
 			status = "failed"
 		}
 	}
-	if s.options.OnComplete != nil {
-		if persistErr := s.options.OnComplete(context.Background(), result, graph, status); persistErr != nil {
-			s.options.Logger.Error("persist scan", "error", persistErr)
-			status = "failed"
-		}
-	}
+	// Build the drill-down index once and reuse it for persistence + live queries.
 	dirIndex := scan.BuildDirectoryIndex(result)
 	pathIndex := make(map[string]scan.DirectoryNode, len(result.Entries))
 	for _, nodes := range dirIndex {
 		for _, node := range nodes {
 			pathIndex[node.Path] = node
+		}
+	}
+
+	if s.options.OnComplete != nil {
+		_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{
+			ScanID: scanID, Phase: "persist", EntriesVisited: result.EntriesVisited,
+			AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)),
+		}})
+		persistProgress := func(written, total int64) {
+			_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{
+				ScanID: scanID, Phase: "persist", EntriesVisited: result.EntriesVisited,
+				AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)),
+				RowsWritten: written, RowsTotal: total,
+			}})
+		}
+		if persistErr := s.options.OnComplete(context.Background(), result, graph, status, dirIndex, persistProgress); persistErr != nil {
+			s.options.Logger.Error("persist scan", "error", persistErr)
+			status = "failed"
 		}
 	}
 

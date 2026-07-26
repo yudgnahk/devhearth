@@ -38,6 +38,8 @@ struct ScanProgress: Decodable {
     let entriesVisited: Int64
     let allocatedBytes: Int64
     let assetsFound: Int64?
+    let rowsWritten: Int64?
+    let rowsTotal: Int64?
     let complete: Bool?
 }
 

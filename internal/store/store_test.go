@@ -35,9 +35,17 @@ func TestSavePersistsInventoryAndAssets(t *testing.T) {
 		}},
 		Relationships: nil,
 	}
-	id, err := database.Save(context.Background(), result, graph, "complete")
+	var lastWritten, lastTotal int64
+	id, err := database.SaveWithOptions(context.Background(), result, graph, "complete", SaveOptions{
+		Progress: func(written, total int64) {
+			lastWritten, lastTotal = written, total
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if lastTotal == 0 || lastWritten != lastTotal {
+		t.Fatalf("progress written=%d total=%d", lastWritten, lastTotal)
 	}
 	var count int
 	if err := database.db.QueryRow(`SELECT COUNT(*) FROM filesystem_entries WHERE scan_id = ?`, id).Scan(&count); err != nil {
@@ -52,6 +60,17 @@ func TestSavePersistsInventoryAndAssets(t *testing.T) {
 	}
 	if parented != 2 {
 		t.Fatalf("parented entries = %d, want 2", parented)
+	}
+	// Explicit ids should be stable parent-before-child.
+	var childParent, rootID int64
+	if err := database.db.QueryRow(`SELECT id FROM filesystem_entries WHERE scan_id = ? AND path = ?`, id, "/fixtures").Scan(&rootID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRow(`SELECT parent_id FROM filesystem_entries WHERE scan_id = ? AND path = ?`, id, "/fixtures/data").Scan(&childParent); err != nil {
+		t.Fatal(err)
+	}
+	if childParent != rootID {
+		t.Fatalf("parent_id = %d, want root id %d", childParent, rootID)
 	}
 	children, err := database.ListDirectoryChildren(context.Background(), id, "/fixtures")
 	if err != nil {
@@ -81,6 +100,94 @@ func TestSavePersistsInventoryAndAssets(t *testing.T) {
 		t.Fatalf("reopen migrated database: %v", err)
 	}
 	defer database.Close()
+}
+
+func TestSaveSkipsBulkTreeInteriors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inventory.sqlite")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	now := time.Now().UTC()
+	result := scan.Result{
+		Roots: []string{"/proj"}, StartedAt: now, CompletedAt: now,
+		Entries: []scan.Entry{
+			{Path: "/proj", Kind: "directory", DeviceID: 1, Inode: 1, LinkCount: 1, ModifiedAt: now},
+			{Path: "/proj/node_modules", ParentPath: "/proj", Kind: "directory", DeviceID: 1, Inode: 2, LinkCount: 1, ModifiedAt: now},
+			{Path: "/proj/node_modules/lodash", ParentPath: "/proj/node_modules", Kind: "directory", DeviceID: 1, Inode: 3, LinkCount: 1, ModifiedAt: now},
+			{Path: "/proj/node_modules/lodash/index.js", ParentPath: "/proj/node_modules/lodash", Kind: "file", LogicalBytes: 10, AllocatedBytes: 4096, DeviceID: 1, Inode: 4, LinkCount: 1, ModifiedAt: now},
+			{Path: "/proj/src", ParentPath: "/proj", Kind: "directory", DeviceID: 1, Inode: 5, LinkCount: 1, ModifiedAt: now},
+			{Path: "/proj/src/main.go", ParentPath: "/proj/src", Kind: "file", LogicalBytes: 20, AllocatedBytes: 4096, DeviceID: 1, Inode: 6, LinkCount: 1, ModifiedAt: now},
+		},
+	}
+	id, err := database.Save(context.Background(), result, assets.Graph{}, "complete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM filesystem_entries WHERE scan_id = ?`, id).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	// node_modules itself kept; lodash interior dropped; src tree kept.
+	if count != 4 {
+		t.Fatalf("entries = %d, want 4 (skipped bulk interiors)", count)
+	}
+	var interior int
+	if err := database.db.QueryRow(`SELECT COUNT(*) FROM filesystem_entries WHERE scan_id = ? AND path LIKE ?`, id, "%/node_modules/%").Scan(&interior); err != nil {
+		t.Fatal(err)
+	}
+	if interior != 0 {
+		t.Fatalf("bulk interiors persisted = %d, want 0", interior)
+	}
+}
+
+// A bulk save must not trade crash safety for speed, and must leave the
+// connection's integrity settings exactly as it found them.
+func TestSaveKeepsDurableConnectionSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inventory.sqlite")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	pragma := func(name string) string {
+		var value string
+		if err := database.db.QueryRow(`PRAGMA ` + name).Scan(&value); err != nil {
+			t.Fatalf("read pragma %s: %v", name, err)
+		}
+		return value
+	}
+
+	// journal_mode=wal with synchronous=1 (NORMAL) is crash-safe; 0 (OFF) is not.
+	if mode := pragma("journal_mode"); mode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", mode)
+	}
+	if sync := pragma("synchronous"); sync != "1" {
+		t.Fatalf("synchronous = %q, want 1 (NORMAL)", sync)
+	}
+
+	now := time.Now().UTC()
+	result := scan.Result{
+		Roots: []string{"/fixtures"}, StartedAt: now, CompletedAt: now,
+		Entries: []scan.Entry{
+			{Path: "/fixtures", Kind: "directory", DeviceID: 1, Inode: 1, LinkCount: 1, ModifiedAt: now},
+		},
+	}
+	if _, err := database.Save(context.Background(), result, assets.Graph{}, "complete"); err != nil {
+		t.Fatal(err)
+	}
+
+	if sync := pragma("synchronous"); sync != "1" {
+		t.Fatalf("synchronous after save = %q, want 1 (NORMAL)", sync)
+	}
+	if fk := pragma("foreign_keys"); fk != "1" {
+		t.Fatalf("foreign_keys after save = %q, want 1 (restored)", fk)
+	}
+	if temp := pragma("temp_store"); temp != "0" {
+		t.Fatalf("temp_store after save = %q, want 0 (DEFAULT)", temp)
+	}
 }
 
 func TestMigrationAppliesAssetGraphColumns(t *testing.T) {
