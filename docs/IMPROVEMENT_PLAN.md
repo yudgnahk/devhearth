@@ -269,18 +269,26 @@ Status: started. The framework, fit scoring, six rule families, `fit.*` and
 remote and stale download caches are not yet rules, and both hibernation and
 worktree advice stay blocked until deep Git verification lands.
 
-1. Deterministic rule framework:
-   `Rule(graph, sizes) -> []Recommendation{savingsRange, confidence, evidence, restorationCost, blockers, risk}`
-   — pure functions, table-tested, no mutation.
-2. First rules, all computable once size attribution lands:
-   - Reproducible build output and `node_modules` hibernation candidates
-     (lockfile present, clean git, untouched for N days).
-   - Duplicate runtime and version-manager detection (nvm + mise + Volta all
-     present).
-   - Duplicate checkouts of the same repository (same remote across paths).
-   - Stale download caches per ecosystem.
-3. A `recommendations.list` method plus persistence, carrying an explicit
-   advice-only flag to preserve the trust model.
+1. ~~Deterministic rule framework:~~ done — `Rule(Input) -> []Recommendation`
+   in `internal/recommend`, pure and table-tested, with ranking derived from
+   savings, risk, and confidence rather than supplied by a rule.
+2. First rules:
+   - [x] Reproducible `node_modules` and virtualenv hibernation candidates
+         (lockfile present, untouched for N days). Clean-git verification is
+         still missing, so every candidate carries that as a blocker.
+   - [x] Duplicate runtime and version-manager detection (nvm + mise + Volta all
+         present).
+   - [x] Shared dependency store adoption and portfolio-fit standardization,
+         which the original list did not anticipate.
+   - [x] Duplicate downloadable AI models by name and size.
+   - [x] Obsolete Git worktree candidates.
+   - [ ] Duplicate checkouts of the same repository (same remote across paths) —
+         needs remote inspection, which waits on deep Git status.
+   - [ ] Stale download caches per ecosystem.
+3. ~~A `recommendations.list` method plus persistence, carrying an explicit
+   advice-only flag to preserve the trust model.~~ done — `recommendations.list`,
+   `recommendations.get`, `fit.list`, and `fit.get`, with `adviceOnly: true` on
+   every recommendation and migration 005 for persistence.
 
 ### U3 — Engine and platform
 

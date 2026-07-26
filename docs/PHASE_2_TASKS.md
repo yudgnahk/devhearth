@@ -20,7 +20,8 @@
 - [ ] Homebrew / Xcode / SDKMAN inventory beyond directory-name signatures.
 - [ ] Container runtime image/volume inventory (Docker Desktop data roots).
 - [ ] Richer relationship graph visualization (beyond list + detail).
-- [ ] Fit scoring remains deferred to Phase 3.
+- [x] Fit scoring moved to Phase 3 as planned and its first slice is implemented
+      there (`internal/portfolio`); nothing about it remains open in Phase 2.
 
 This Phase 2 slice remains read-only: detectors may read small manifests and
 Git pointer files, but never mutate scanned paths. Recommendations and
