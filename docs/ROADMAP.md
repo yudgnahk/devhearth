@@ -95,6 +95,17 @@ hashing, installed-version comparison, and plan comparison remain. See
 
 Exit criteria: A policy can be reused on a second Mac without exposing the first Mac's private inventory.
 
+Status: In progress. The first slice provides the portable policy document
+(portable by construction: no field can hold an absolute path), boundary
+validation of untrusted policy files, per-machine overlays, policy-driven fit
+weighting and risk thresholds, recommendation suppression and local-only
+feedback, path-free scan snapshots with growth series and regression detection,
+`policy.*`, `trends.list`, `recommendations.suppress`, and
+`recommendations.feedback` protocol methods, SQLite persistence (migration 006),
+and Trends and Policy views in the preview UI. FSEvents invalidation, scheduled
+scans, notifications, and traversal-time exclusions remain. See
+[the Phase 4 task list](PHASE_4_TASKS.md).
+
 ## Phase 5 — Guided operations
 
 - Hibernation plan export.

@@ -329,6 +329,22 @@ Users must be able to export a redacted, versionable policy file containing:
 
 Absolute personal paths, repository names, asset inventory, credentials, scan history, and inferred portfolio fingerprints must not be exported by default. Optional redacted portfolio summaries may be exported only with explicit opt-in.
 
+The policy document must make this structural rather than procedural: no field may be capable of holding an absolute path. A scan root is an alias plus a relative segment, and a root that cannot be expressed portably is not stored at all. Exclusions are relative patterns.
+
+An imported policy is untrusted input and is validated at the boundary: unknown schema versions, unknown fields, roots that escape their alias, absolute exclusions, invalid globs, out-of-range weights or windows, suppressions that name no target, control characters, and oversized documents are refused rather than repaired.
+
+Recommendation feedback (whether advice was useful) is local only and has no export path. A decision the user wants to carry to another machine is recorded as a suppression.
+
+### 7.10a Monitoring and growth
+
+Repeat scans of the same roots must be able to answer what changed:
+
+- Per-scan snapshots holding counts and byte totals for named series (per ecosystem, per storage class, and the scan total). Snapshots must not hold paths.
+- Growth series with deltas, rate per day, and direction, where a small move reads as unchanged rather than as a trend.
+- Regression signals for a sudden jump, sustained growth across consecutive scans, and rising recoverable storage. A signal names an observation, never a cause.
+- Comparison only within one scan scope. Scans covering different roots are different measurements and must not be subtracted from each other.
+- Only completed scans enter history; a partial scan compared against a full one would read as storage disappearing.
+
 ### 7.11 User interface
 
 The macOS UI must provide:
@@ -342,10 +358,13 @@ The macOS UI must provide:
 - Recommendation inbox ranked by value, risk, and confidence.
 - Evidence inspector, including fit-score factors for portfolio recommendations.
 - Plan comparison showing before/after estimates.
+- Growth trends across repeat scans, with the changes worth a look called out.
+- Policy view: fit weighting, risk threshold, portable scan roots, and hidden advice, with export and import.
 - Search, filtering, and exclusions.
 - Audit history.
 - Export of reports and policy.
 - Accessibility, keyboard navigation, dark mode, and reduced-motion support.
+- Adjustable text size. macOS has no Dynamic Type, so the app owns its own scale: `⌘+`, `⌘−`, and `⌘0` must resize the whole window, and the setting must persist across launches. The default ramp targets a large external display rather than the AppKit defaults, because the densest views here are evidence tables read at arm's length.
 
 ## 8. Risk model
 

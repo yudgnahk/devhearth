@@ -61,28 +61,72 @@ func toWireAssessment(assessment portfolio.Assessment) FitAssessment {
 		ProjectLocalInstallBytes: assessment.ProjectLocalInstallBytes,
 		SharedStoreBytes:         assessment.SharedStoreBytes,
 		VersionManagers:          assessment.VersionManagers,
+		FitMode:                  assessment.FitMode,
 	}
 }
 
-func recommendationsList(id string, active *activeScan, family string) RecommendationsListResult {
+// recommendationsList projects the inbox. Suppressed advice is included only
+// when a client asks for it by name, and each entry says it is suppressed: a
+// client must never be able to present hidden advice as if it were live.
+func recommendationsList(id string, active *activeScan, family, include string) RecommendationsListResult {
 	byID := assetIndex(active)
-	out := make([]RecommendationSummary, 0, len(active.advice.Recommendations))
-	for _, recommendation := range active.advice.Recommendations {
-		if family != "" && string(recommendation.Family) != family {
-			continue
-		}
-		out = append(out, toWireRecommendation(recommendation, byID, active.result.Roots))
+	result := RecommendationsListResult{
+		ScanID:            id,
+		SuppressedCount:   len(active.advice.Suppressed),
+		HiddenByRiskCount: len(active.advice.HiddenByRisk),
+		RiskThreshold:     active.policy.RiskThreshold,
 	}
-	return RecommendationsListResult{ScanID: id, Recommendations: out}
+	result.Recommendations = make([]RecommendationSummary, 0, len(active.advice.Recommendations))
+
+	appendMatching := func(source []recommend.Recommendation, suppressed, hiddenByRisk bool) {
+		for _, recommendation := range source {
+			if family != "" && string(recommendation.Family) != family {
+				continue
+			}
+			summary := toWireRecommendation(recommendation, byID, active.result.Roots)
+			summary.Suppressed = suppressed
+			summary.HiddenByRisk = hiddenByRisk
+			result.Recommendations = append(result.Recommendations, summary)
+		}
+	}
+
+	switch include {
+	case IncludeSuppressed:
+		appendMatching(active.advice.Suppressed, true, false)
+	case IncludeAll:
+		appendMatching(active.advice.Recommendations, false, false)
+		appendMatching(active.advice.Suppressed, true, false)
+		appendMatching(active.advice.HiddenByRisk, false, true)
+	default:
+		appendMatching(active.advice.Recommendations, false, false)
+	}
+	return result
 }
 
+// findRecommendation resolves one recommendation by id, including suppressed
+// ones so a user reviewing a past decision can still read the evidence behind
+// it. The result records that it was suppressed.
 func findRecommendation(active *activeScan, recommendationID string) (RecommendationSummary, bool) {
-	for _, recommendation := range active.advice.Recommendations {
-		if recommendation.ID == recommendationID {
+	for _, group := range []struct {
+		items        []recommend.Recommendation
+		suppressed   bool
+		hiddenByRisk bool
+	}{
+		{items: active.advice.Recommendations},
+		{items: active.advice.Suppressed, suppressed: true},
+		{items: active.advice.HiddenByRisk, hiddenByRisk: true},
+	} {
+		for _, recommendation := range group.items {
+			if recommendation.ID != recommendationID {
+				continue
+			}
 			// Resolve only this recommendation's assets, and only once it matched:
 			// an unknown id should not walk the graph at all.
 			byID := assetSubset(active, recommendation.AffectedAssetIDs)
-			return toWireRecommendation(recommendation, byID, active.result.Roots), true
+			summary := toWireRecommendation(recommendation, byID, active.result.Roots)
+			summary.Suppressed = group.suppressed
+			summary.HiddenByRisk = group.hiddenByRisk
+			return summary, true
 		}
 	}
 	return RecommendationSummary{}, false
@@ -169,16 +213,30 @@ func toWireRecommendation(
 
 // adviceSummary rolls recommendations up for report.export. Savings bounds are
 // summed separately so the report never collapses a range into one number.
+//
+// Totals cover the full rule output, including advice the policy is hiding.
+// Summing only what is visible would make hiding a recommendation look like
+// doing the work: the recoverable-storage figure would drop even though nothing
+// on disk changed. The withheld portion is reported alongside instead.
 func adviceSummary(active *activeScan) *AdviceSummary {
-	if len(active.advice.Recommendations) == 0 && len(active.advice.Assessments) == 0 {
+	all := active.advice.All
+	if len(all) == 0 {
+		all = active.advice.Recommendations
+	}
+	if len(all) == 0 && len(active.advice.Assessments) == 0 {
 		return nil
 	}
 	summary := &AdviceSummary{
-		RecommendationCount: len(active.advice.Recommendations),
-		ByFamily:            map[string]int{},
-		ByRisk:              map[string]int{},
+		RecommendationCount:      len(active.advice.Recommendations),
+		TotalRecommendationCount: len(all),
+		ByFamily:                 map[string]int{},
+		ByRisk:                   map[string]int{},
+		SuppressedCount:          len(active.advice.Suppressed),
+		HiddenByRiskCount:        len(active.advice.HiddenByRisk),
+		FitMode:                  active.policy.FitMode,
+		RiskThreshold:            active.policy.RiskThreshold,
 	}
-	for _, recommendation := range active.advice.Recommendations {
+	for _, recommendation := range all {
 		summary.ByFamily[string(recommendation.Family)]++
 		summary.ByRisk[string(recommendation.Risk)]++
 		summary.SavingsLowBytes += recommendation.Savings.LowBytes
@@ -188,6 +246,12 @@ func adviceSummary(active *activeScan) *AdviceSummary {
 		}
 		if len(recommendation.Blockers) > 0 {
 			summary.BlockedCount++
+		}
+	}
+	for _, group := range [][]recommend.Recommendation{active.advice.Suppressed, active.advice.HiddenByRisk} {
+		for _, recommendation := range group {
+			summary.WithheldSavingsLowBytes += recommendation.Savings.LowBytes
+			summary.WithheldSavingsHighBytes += recommendation.Savings.HighBytes
 		}
 	}
 	if len(active.advice.Recommendations) > 0 {

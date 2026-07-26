@@ -20,6 +20,7 @@ import (
 	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/scan"
+	"github.com/yudgnahk/devhearth/internal/trend"
 	_ "modernc.org/sqlite"
 )
 
@@ -106,6 +107,10 @@ type SaveOptions struct {
 	DirectoryIndex map[string][]scan.DirectoryNode
 	// Progress reports durable rows written so far and the planned total.
 	Progress func(written, total int64)
+	// Snapshot is the path-free trend roll-up for this scan. It is written in
+	// the same transaction as the inventory so history can never describe a scan
+	// that failed to persist. Nil skips trend recording.
+	Snapshot *trend.Snapshot
 }
 
 // insertBatchSize balances statement size against modernc/sqlite bind overhead.
@@ -330,6 +335,15 @@ func (s *Store) SaveWithOptions(ctx context.Context, result scan.Result, advice 
 	}
 	if err := insertAdvice(ctx, tx, scanID, advice); err != nil {
 		return "", err
+	}
+	if options.Snapshot != nil {
+		snapshot := *options.Snapshot
+		// The engine assigns the durable scan id here, so the caller cannot have
+		// stamped it onto the snapshot before this point.
+		snapshot.ScanID = scanID
+		if err := insertSnapshot(ctx, tx, snapshot); err != nil {
+			return "", err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return "", err

@@ -5,19 +5,46 @@ import AppKit
 @main
 struct DevHearthApp: App {
     @State private var engine = EngineClient()
+    /// Persisted so the window does not reset to unreadably small text on every
+    /// launch. Reads are clamped because the stored value is user-editable.
+    @AppStorage("textScale") private var storedTextScale: Double = TextScale.default
+
+    private var textScale: Double { TextScale.clamp(storedTextScale) }
 
     var body: some Scene {
         WindowGroup("DevHearth") {
-            ContentView(engine: engine)
+            ContentView(engine: engine, textScale: $storedTextScale)
                 .frame(minWidth: 900, minHeight: 560)
+                .environment(\.appTextScale, CGFloat(textScale))
+                // Views that never named a style (table cells, button titles)
+                // still have to grow, so the scaled body font becomes the
+                // window default rather than AppKit's fixed 13pt.
+                .environment(\.font, AppFont.body.resolve(scale: CGFloat(textScale)))
                 .task { await engine.connect() }
                 .onDisappear { engine.stop() }
+        }
+        .commands {
+            // macOS gives a SwiftUI window no zoom of its own, so the app has to
+            // publish these itself; without them ⌘+ is simply unbound.
+            CommandGroup(after: .sidebar) {
+                Button("Bigger Text") { storedTextScale = TextScale.larger(than: textScale) }
+                    .keyboardShortcut("+", modifiers: .command)
+                    .disabled(textScale >= TextScale.maximum)
+                Button("Smaller Text") { storedTextScale = TextScale.smaller(than: textScale) }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(textScale <= TextScale.minimum)
+                Button("Actual Size (\(TextScale.label(textScale)))") { storedTextScale = TextScale.default }
+                    .keyboardShortcut("0", modifiers: .command)
+                    .disabled(textScale == TextScale.default)
+                Divider()
+            }
         }
     }
 }
 
 struct ContentView: View {
     let engine: EngineClient
+    @Binding var textScale: Double
     @State private var selectingFolder = false
     @State private var selectedAsset: AssetSummary?
     @State private var detailTab: DetailTab = .inventory
@@ -28,13 +55,19 @@ struct ContentView: View {
         case assets = "Assets"
         case advice = "Advice"
         case fit = "Fit"
+        case trends = "Trends"
+        case policy = "Policy"
         var id: String { rawValue }
     }
 
     var body: some View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("DevHearth").font(.largeTitle.bold())
+                HStack(alignment: .firstTextBaseline) {
+                    Text("DevHearth").appFont(.largeTitle, weight: .bold)
+                    Spacer()
+                    TextScaleControl(scale: $textScale)
+                }
                 Text("Read-only inventory and asset graph").foregroundStyle(.secondary)
                 HStack {
                     Button("Choose Folder to Scan…") { selectingFolder = true }
@@ -57,7 +90,7 @@ struct ContentView: View {
                 }
                 if let path = engine.enginePath {
                     Text(path)
-                        .font(.caption2)
+                        .appFont(.caption2)
                         .foregroundStyle(.tertiary)
                         .textSelection(.enabled)
                         .lineLimit(2)
@@ -66,31 +99,39 @@ struct ContentView: View {
                     Text(error)
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
-                        .font(.caption)
+                        .appFont(.caption)
                 }
                 if let exportError {
                     Text(exportError)
                         .foregroundStyle(.red)
-                        .font(.caption)
+                        .appFont(.caption)
                 }
                 if let report = engine.lastReport {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Scan overview").font(.headline)
+                        Text("Scan overview").appFont(.headline)
                         Text("\(report.entriesVisited) entries · \(ByteCountFormatter.string(fromByteCount: report.allocatedBytes, countStyle: .file)) allocated")
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                         if let inaccessible = report.inaccessible, !inaccessible.isEmpty {
                             Text("\(inaccessible.count) inaccessible path(s)")
-                                .font(.caption)
+                                .appFont(.caption)
                                 .foregroundStyle(.orange)
                         }
-                        if let advice = report.advice, advice.recommendationCount > 0 {
+                        if let advice = report.advice, (advice.totalRecommendationCount ?? advice.recommendationCount) > 0 {
+                            // The savings range covers every recommendation the
+                            // rules produced, so hiding one never reads as
+                            // having recovered it.
                             Text("\(advice.recommendationCount) recommendation(s) · est. \(formatBytes(advice.savingsLowBytes))–\(formatBytes(advice.savingsHighBytes))")
-                                .font(.caption)
+                                .appFont(.caption)
                                 .foregroundStyle(.secondary)
+                            if let withheldHigh = advice.withheldSavingsHighBytes, withheldHigh > 0 {
+                                Text("includes \(formatBytes(advice.withheldSavingsLowBytes ?? 0))–\(formatBytes(withheldHigh)) from advice your policy hides")
+                                    .appFont(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                             if advice.blockedCount > 0 {
                                 Text("\(advice.blockedCount) blocked pending verification")
-                                    .font(.caption2)
+                                    .appFont(.caption2)
                                     .foregroundStyle(.orange)
                             }
                         }
@@ -101,9 +142,9 @@ struct ContentView: View {
                         Section("Portfolio") {
                             ForEach(engine.portfolio) { item in
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.ecosystem.capitalized).font(.headline)
+                                    Text(item.ecosystem.capitalized).appFont(.headline)
                                     Text(portfolioLine(item))
-                                        .font(.caption)
+                                        .appFont(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                             }
@@ -115,7 +156,7 @@ struct ContentView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(asset.displayName)
                                     Text("\(asset.kind) · \(asset.detectorId)")
-                                        .font(.caption)
+                                        .appFont(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                             }
@@ -154,6 +195,10 @@ struct ContentView: View {
                     AdviceView(engine: engine)
                 case .fit:
                     FitView(engine: engine)
+                case .trends:
+                    TrendsView(engine: engine)
+                case .policy:
+                    PolicyView(engine: engine)
                 }
             }
         }
@@ -221,12 +266,12 @@ struct DirectoryBrowserView: View {
                 .disabled(!engine.hasCompletedScan || (engine.directoryPathKey.isEmpty && engine.directoryParentKey == nil))
 
                 Text(engine.directoryPath.isEmpty ? "Scan roots" : engine.directoryPath)
-                    .font(.headline)
+                    .appFont(.headline)
                     .lineLimit(2)
                     .textSelection(.enabled)
                 Spacer()
                 Text("\(engine.directoryChildren.count) items")
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
@@ -292,7 +337,7 @@ struct DirectoryBrowserView: View {
 
                     TableColumn("Path") { child in
                         Text(child.path)
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .textSelection(.enabled)
@@ -317,7 +362,7 @@ struct AssetDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(asset.displayName).font(.title2.bold())
+                Text(asset.displayName).appFont(.title2, weight: .bold)
                 labeled("Kind", asset.kind)
                 labeled("Path", asset.path)
                 labeled("Risk", asset.risk)
@@ -336,13 +381,13 @@ struct AssetDetailView: View {
                 }
 
                 if let evidence = asset.evidence, !evidence.isEmpty {
-                    Text("Evidence").font(.headline)
+                    Text("Evidence").appFont(.headline)
                     ForEach(evidence) { item in
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(item.kind) (\(String(format: "%.0f%%", item.confidence * 100)))")
-                                .font(.subheadline.weight(.semibold))
+                                .appFont(.subheadline, weight: .semibold)
                             Text(item.value)
-                                .font(.caption)
+                                .appFont(.caption)
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
                         }
@@ -351,10 +396,10 @@ struct AssetDetailView: View {
                 }
 
                 if !relationships.isEmpty {
-                    Text("Relationships").font(.headline)
+                    Text("Relationships").appFont(.headline)
                     ForEach(relationships) { rel in
                         Text("\(rel.kind) · confidence \(String(format: "%.0f%%", rel.confidence * 100))")
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -366,7 +411,7 @@ struct AssetDetailView: View {
 
     private func labeled(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(title).appFont(.caption).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
     }

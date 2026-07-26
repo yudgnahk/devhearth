@@ -88,6 +88,27 @@ Fit scoring and preferred-tool policy guide structure; they do not authorize mut
 - “Stay with the current tool” must remain a first-class outcome when migration friction exceeds expected benefit.
 - AI may explain a fit ranking in plain language but cannot change scores, blockers, or risk.
 - Exported policies carry explicit preferred tools only by default; inferred portfolio fingerprints and project-level tool usage require opt-in and redaction.
+- A fit weighting mode is a named tradeoff, never a claim about the best tool. No mode may zero out migration friction: preferring disk savings is a preference, not permission to recommend a painful migration for a small win.
+
+## Policy portability and suppression
+
+The portable policy is the only thing that travels between machines, and it is built so that it cannot carry anything else.
+
+- Portability is structural, not procedural. The policy document has no field capable of holding an absolute path: a scan root is an alias plus a relative segment, and exclusions must be relative patterns. An export cannot leak the machine's layout even if a future writer forgets a redaction step.
+- A stored root does keep its folder names below the alias: `~/Projects/acme-migration` exports as exactly that. This is the residual disclosure in the format, and the export path must say so rather than claim more privacy than it delivers. Roots are never added automatically by scanning; a root is in a policy only because the user put it there.
+- Imported policies are untrusted input. Unknown schema versions, unknown fields, roots that escape their alias, absolute exclusions, invalid globs, out-of-range weights or windows, control characters, and oversized documents are refused rather than repaired. A rejected document is not stored.
+- A suppression hides advice. It never marks work as done, never changes a savings figure, and never lowers a risk class. Withheld counts travel with every inbox response and with the exported report, so a shorter inbox is always explainable rather than silently shorter.
+- Suppressed advice remains retrievable with its full evidence, and carries a flag saying it is suppressed, so a user can review and undo a past decision and no client can present hidden advice as live.
+- Recommendation feedback (accepted, rejected, unclear, later) is a usage trace and has no export path. A decision the user wants to travel is recorded as a suppression, which is path-free by construction.
+- A risk display threshold controls what the inbox shows. It cannot change the risk class the engine assigned, and an unrecognized risk label is shown rather than hidden: failing toward visibility is the safe direction.
+
+## Trend history
+
+- Snapshots hold counts and byte totals for a small set of named series. They hold no paths, so retaining history does not create a second copy of the inventory.
+- Snapshots are compared only within one scan scope. A scan of one project folder and a scan of the whole home directory are different measurements; subtracting one from the other would report storage that never disappeared. Scope identity is a one-way digest of the roots, kept locally and never exported.
+- Only completed scans become history. A cancelled or failed scan measured part of the tree, and comparing it against a full scan would read as storage vanishing.
+- A regression signal names an observation, never a cause. The engine can see that a series grew; it cannot see why.
+- Growth figures inherit the uncertainty of their inputs: series built on shared stores or hard-linked trees are marked as lower bounds rather than presented as exact.
 
 ## Mutation protocol
 

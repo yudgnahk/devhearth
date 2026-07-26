@@ -19,8 +19,12 @@ import (
 	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/detect"
+	"github.com/yudgnahk/devhearth/internal/policy"
 	"github.com/yudgnahk/devhearth/internal/scan"
 )
+
+// rfc3339 is the timestamp format every protocol response uses.
+const rfc3339 = time.RFC3339
 
 type ServerOptions struct {
 	MockScan  bool
@@ -29,14 +33,29 @@ type ServerOptions struct {
 	Detect    func(context.Context, scan.Result, func(detect.Progress)) (assets.Graph, error)
 	// Advise runs read-only Phase 3 analysis over the detected graph: size and
 	// activity attribution, portfolio fit, and recommendation rules. It receives
-	// the inventory rollup so attribution does not rebuild it. When nil, the
-	// detector graph is used unchanged and no advice is produced.
-	Advise func(ctx context.Context, result scan.Result, graph assets.Graph, dirIndex map[string][]scan.DirectoryNode) (advisor.Result, error)
+	// the inventory rollup so attribution does not rebuild it, plus the policy
+	// resolved for this machine so weighting and suppression are decided in one
+	// place. When nil, the detector graph is used unchanged and no advice is
+	// produced.
+	Advise func(ctx context.Context, result scan.Result, graph assets.Graph, dirIndex map[string][]scan.DirectoryNode, active policy.Effective) (advisor.Result, error)
 	// OnComplete persists a finished scan. progress may be nil; when non-nil it
 	// reports durable rows written so far (written/total) during persistence.
 	// dirIndex is the precomputed inventory rollup for this result (may be empty).
 	// advice carries the attributed graph, so persistence must use advice.Graph.
 	OnComplete func(ctx context.Context, result scan.Result, advice advisor.Result, status string, dirIndex map[string][]scan.DirectoryNode, progress func(written, total int64)) error
+
+	// Monitoring is the durable Phase 4 state: portable policy, local feedback,
+	// and trend history. Nil leaves those methods reporting "not available"
+	// rather than silently discarding a user's preferences.
+	Monitoring Monitoring
+	// Machine describes this machine so policy overlays can match it. It is
+	// supplied by the host and never inferred from the inventory.
+	Machine policy.Machine
+	// HomeDir resolves portable policy roots. The resolved absolute paths stay
+	// inside the engine.
+	HomeDir string
+	// Now anchors policy timestamps; zero uses the current UTC time.
+	Now func() time.Time
 }
 
 type Server struct {
@@ -57,6 +76,10 @@ type activeScan struct {
 	advice    advisor.Result
 	dirIndex  map[string][]scan.DirectoryNode // parent path -> direct children
 	pathIndex map[string]scan.DirectoryNode   // path -> node (for parent lookup)
+	// policy is the effective policy this scan was analysed under, kept so
+	// later queries describe the scan as it was produced rather than as the
+	// policy reads now.
+	policy policy.Effective
 }
 
 func NewServer(options ServerOptions) *Server {
@@ -67,6 +90,14 @@ func NewServer(options ServerOptions) *Server {
 		options.Inventory = defaultInventory
 	}
 	return &Server{options: options, scans: make(map[string]*activeScan)}
+}
+
+// now anchors policy and feedback timestamps so tests can pin them.
+func (s *Server) now() time.Time {
+	if s.options.Now == nil {
+		return time.Now().UTC()
+	}
+	return s.options.Now().UTC()
 }
 
 func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -130,20 +161,34 @@ func (s *Server) handle(ctx context.Context, encoder *json.Encoder, request Requ
 		}})
 	case "scan.start":
 		var params ScanStartParams
-		if err := decodeParams(request.Params, &params); err != nil || len(params.Roots) == 0 {
+		if err := decodeParams(request.Params, &params); err != nil {
+			return s.write(encoder, failure(request.ID, -32602, "invalid params"))
+		}
+		roots := params.Roots
+		if len(roots) == 0 && params.UsePolicyRoots {
+			resolved, policyErr := s.policyRoots(ctx, params.PolicyID)
+			if policyErr != nil {
+				return s.write(encoder, failure(request.ID, policyErr.Code, policyErr.Message))
+			}
+			roots = resolved
+		}
+		if len(roots) == 0 {
 			return s.write(encoder, failure(request.ID, -32602, "at least one scan root is required"))
 		}
+		// The policy is resolved once, before the scan starts, so a policy edit
+		// mid-scan cannot change the weighting halfway through the analysis.
+		active := s.resolvePolicy(ctx, params.PolicyID)
 		scanID := fmt.Sprintf("scan_%06d", s.nextScanID.Add(1))
 		scanContext, cancel := context.WithCancel(ctx)
 		s.scansMu.Lock()
-		s.scans[scanID] = &activeScan{cancel: cancel, status: "running"}
+		s.scans[scanID] = &activeScan{cancel: cancel, status: "running", policy: active}
 		s.scansMu.Unlock()
 		if err := s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: ScanStarted{ScanID: scanID}}); err != nil {
 			cancel()
 			return err
 		}
 		s.workers.Add(1)
-		go func() { defer s.workers.Done(); s.runScan(scanContext, encoder, scanID, params.Roots) }()
+		go func() { defer s.workers.Done(); s.runScan(scanContext, encoder, scanID, roots, active) }()
 		return nil
 	case "scan.cancel":
 		var params ScanCancelParams
@@ -263,7 +308,7 @@ func (s *Server) handle(ctx context.Context, encoder *json.Encoder, request Requ
 		}
 		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan recommendations are not available",
 			func(current *activeScan) (any, *Error) {
-				return recommendationsList(params.ScanID, current, params.Family), nil
+				return recommendationsList(params.ScanID, current, params.Family, params.Include), nil
 			})
 	case "recommendations.get":
 		var params RecommendationsGetParams
@@ -278,9 +323,94 @@ func (s *Server) handle(ctx context.Context, encoder *json.Encoder, request Requ
 				}
 				return RecommendationsGetResult{ScanID: params.ScanID, Recommendation: recommendation}, nil
 			})
+	case "policy.get":
+		var params PolicyGetParams
+		// Policy reads take no required parameter, so an absent params object is
+		// valid here where every scan-scoped method rejects it.
+		_ = decodeParams(request.Params, &params)
+		document, policyErr := s.activePolicy(ctx, params.PolicyID)
+		if policyErr != nil {
+			return s.write(encoder, failure(request.ID, policyErr.Code, policyErr.Message))
+		}
+		result, err := policyResult(document, s.options.Machine, s.options.HomeDir)
+		if err != nil {
+			s.options.Logger.Error("render policy", "error", err)
+			return s.write(encoder, failure(request.ID, -32012, "the stored policy could not be rendered"))
+		}
+		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: result})
+	case "policy.set":
+		var params PolicySetParams
+		if err := decodeParams(request.Params, &params); err != nil || len(params.Document) == 0 {
+			return s.write(encoder, failure(request.ID, -32602, "a policy document is required"))
+		}
+		result, failed := s.setPolicy(ctx, params)
+		return s.respond(encoder, request.ID, result, failed)
+	case "policy.export":
+		var params PolicyExportParams
+		_ = decodeParams(request.Params, &params)
+		document, policyErr := s.activePolicy(ctx, params.PolicyID)
+		if policyErr != nil {
+			return s.write(encoder, failure(request.ID, policyErr.Code, policyErr.Message))
+		}
+		encoded, err := policy.Marshal(document)
+		if err != nil {
+			s.options.Logger.Error("export policy", "error", err)
+			return s.write(encoder, failure(request.ID, -32012, "the stored policy could not be exported"))
+		}
+		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: PolicyExportResult{
+			Document:      string(encoded),
+			SchemaVersion: document.SchemaVersion,
+			SuggestedName: "devhearth-policy-" + document.ID + ".json",
+			Notes: []string{
+				"this file carries preferences only: no absolute paths, no inventory, no scan history, and no recommendation feedback",
+				"scan roots travel as portable aliases and resolve against the home directory of the machine that imports them",
+				// Honest rather than reassuring: a root the user stored as
+				// ~/Projects/acme-migration does carry that folder name, and
+				// somebody sharing a policy should know before they send it.
+				"a stored root keeps its folder names below the alias, so review the roots before sharing this file",
+			},
+		}})
+	case "policy.import":
+		var params PolicyImportParams
+		if err := decodeParams(request.Params, &params); err != nil || params.Document == "" {
+			return s.write(encoder, failure(request.ID, -32602, "a policy document is required"))
+		}
+		result, failed := s.importPolicy(ctx, params)
+		return s.respond(encoder, request.ID, result, failed)
+	case "recommendations.suppress":
+		var params RecommendationsSuppressParams
+		if err := decodeParams(request.Params, &params); err != nil {
+			return s.write(encoder, failure(request.ID, -32602, "invalid params"))
+		}
+		if params.RecommendationID == "" && params.Family == "" {
+			return s.write(encoder, failure(request.ID, -32602, "recommendationId or family is required"))
+		}
+		result, failed := s.suppress(ctx, params)
+		return s.respond(encoder, request.ID, result, failed)
+	case "recommendations.feedback":
+		var params RecommendationsFeedbackParams
+		if err := decodeParams(request.Params, &params); err != nil || params.RecommendationID == "" || params.Verdict == "" {
+			return s.write(encoder, failure(request.ID, -32602, "recommendationId and verdict are required"))
+		}
+		result, failed := s.recordFeedback(ctx, params)
+		return s.respond(encoder, request.ID, result, failed)
+	case "trends.list":
+		var params TrendsListParams
+		_ = decodeParams(request.Params, &params)
+		result, failed := s.trends(ctx, params)
+		return s.respond(encoder, request.ID, result, failed)
 	default:
 		return s.write(encoder, failure(request.ID, -32601, "method not found"))
 	}
+}
+
+// respond writes a handler's result or its error, so the Phase 4 handlers can
+// return a plain (any, *Error) pair instead of repeating the envelope.
+func (s *Server) respond(encoder *json.Encoder, requestID json.RawMessage, result any, failed *Error) error {
+	if failed != nil {
+		return s.write(encoder, failure(requestID, failed.Code, failed.Message))
+	}
+	return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: requestID, Result: result})
 }
 
 // withCompletedScan resolves a scan that has finished and projects a result
@@ -306,7 +436,7 @@ func (s *Server) withCompletedScan(
 	return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: requestID, Result: result})
 }
 
-func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID string, roots []string) {
+func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID string, roots []string, active policy.Effective) {
 	progress := func(value scan.Progress) {
 		_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{ScanID: scanID, Phase: value.Phase, EntriesVisited: value.EntriesVisited, AllocatedBytes: value.AllocatedBytes}})
 	}
@@ -362,7 +492,7 @@ func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID stri
 			ScanID: scanID, Phase: "advice", EntriesVisited: result.EntriesVisited,
 			AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)),
 		}})
-		analysed, adviseErr := s.options.Advise(ctx, result, graph, dirIndex)
+		analysed, adviseErr := s.options.Advise(ctx, result, graph, dirIndex, active)
 		switch {
 		case errors.Is(adviseErr, context.Canceled):
 			status = "cancelled"
@@ -400,6 +530,7 @@ func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID stri
 	current.advice = advice
 	current.dirIndex = dirIndex
 	current.pathIndex = pathIndex
+	current.policy = active
 	s.scansMu.Unlock()
 	// Complete marks a terminal event; clients must not wait forever after a
 	// cancellation or failure. The phase preserves the outcome.

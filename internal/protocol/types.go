@@ -1,6 +1,10 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/yudgnahk/devhearth/internal/trend"
+)
 
 const (
 	JSONRPCVersion  = "2.0"
@@ -46,9 +50,14 @@ type HelloResult struct {
 }
 
 type ScanStartParams struct {
-	Roots        []string `json:"roots"`
-	PolicyID     string   `json:"policyId,omitempty"`
-	Cancellation string   `json:"cancellationToken,omitempty"`
+	Roots []string `json:"roots"`
+	// PolicyID selects a stored policy for this scan; empty uses the active one.
+	PolicyID string `json:"policyId,omitempty"`
+	// UsePolicyRoots asks the engine to resolve the policy's portable roots on
+	// this machine instead of taking absolute paths from the client. The
+	// resolved paths stay inside the engine.
+	UsePolicyRoots bool   `json:"usePolicyRoots,omitempty"`
+	Cancellation   string `json:"cancellationToken,omitempty"`
 }
 
 type ScanStarted struct {
@@ -99,11 +108,144 @@ type RecommendationsListParams struct {
 	ScanID string `json:"scanId"`
 	// Family optionally narrows the inbox to one recommendation family.
 	Family string `json:"family,omitempty"`
+	// Include selects visible advice (default), policy-suppressed advice, or
+	// both. Suppressed advice is listed so a user can review and undo a
+	// decision, never so a client can quietly show what the policy hides.
+	Include string `json:"include,omitempty"`
 }
 
 type RecommendationsGetParams struct {
 	ScanID           string `json:"scanId"`
 	RecommendationID string `json:"recommendationId"`
+}
+
+// Recommendation inbox filters for recommendations.list.
+const (
+	IncludeVisible    = "visible"
+	IncludeSuppressed = "suppressed"
+	IncludeAll        = "all"
+)
+
+// PolicyGetParams reads a stored policy; an empty id means the active one.
+type PolicyGetParams struct {
+	PolicyID string `json:"policyId,omitempty"`
+}
+
+// PolicySetParams replaces the stored policy. Document is the portable policy
+// JSON; the engine validates it exactly as it validates an imported file.
+type PolicySetParams struct {
+	Document json.RawMessage `json:"document"`
+}
+
+// PolicyExportParams renders the portable document for writing to a file.
+type PolicyExportParams struct {
+	PolicyID string `json:"policyId,omitempty"`
+}
+
+// PolicyImportParams carries the raw bytes of a policy file the user chose.
+type PolicyImportParams struct {
+	Document string `json:"document"`
+	// Activate defaults to true; a client may import without switching to it.
+	Activate *bool `json:"activate,omitempty"`
+}
+
+// PolicyMachine describes a machine class for overlay matching.
+type PolicyMachine struct {
+	Architecture string `json:"architecture,omitempty"`
+	DiskClass    string `json:"diskClass,omitempty"`
+	Role         string `json:"role,omitempty"`
+}
+
+// PolicyRootStatus is a portable scan root and whether this machine can resolve
+// it. The absolute path it resolves to is deliberately absent.
+type PolicyRootStatus struct {
+	Display    string `json:"display"`
+	Alias      string `json:"alias"`
+	Resolvable bool   `json:"resolvable"`
+}
+
+// EffectivePolicy is the policy after machine overlays are applied, which is
+// what the engine actually used.
+type EffectivePolicy struct {
+	PolicyID          string             `json:"policyId"`
+	Name              string             `json:"name,omitempty"`
+	FitMode           string             `json:"fitMode"`
+	RiskThreshold     string             `json:"riskThreshold"`
+	PreferredTools    map[string]string  `json:"preferredTools,omitempty"`
+	Exclusions        []string           `json:"exclusions,omitempty"`
+	Roots             []PolicyRootStatus `json:"roots,omitempty"`
+	ActiveWithinDays  int                `json:"activeWithinDays"`
+	InactiveAfterDays int                `json:"inactiveAfterDays"`
+	ScanHistoryCount  int                `json:"scanHistoryCount"`
+	SuppressionCount  int                `json:"suppressionCount"`
+	AppliedOverlays   []PolicyMachine    `json:"appliedOverlays,omitempty"`
+}
+
+// PolicyChoices lists the values a client may offer, so the UI never hardcodes
+// a vocabulary the engine owns.
+type PolicyChoices struct {
+	FitModes       []string `json:"fitModes"`
+	RiskThresholds []string `json:"riskThresholds"`
+	Verdicts       []string `json:"verdicts"`
+}
+
+// PolicyResult is the shared shape of every policy method.
+type PolicyResult struct {
+	// Document is the canonical portable JSON: the same bytes a user exports.
+	Document  json.RawMessage `json:"document"`
+	Effective EffectivePolicy `json:"effective"`
+	Machine   PolicyMachine   `json:"machine"`
+	Choices   PolicyChoices   `json:"choices"`
+	Warnings  []string        `json:"warnings,omitempty"`
+}
+
+// PolicyExportResult carries the exact bytes to write to a file, so the client
+// never re-encodes and never changes what was validated.
+type PolicyExportResult struct {
+	Document      string   `json:"document"`
+	SchemaVersion int      `json:"schemaVersion"`
+	SuggestedName string   `json:"suggestedName"`
+	Notes         []string `json:"notes,omitempty"`
+}
+
+// RecommendationsSuppressParams hides advice the user has decided about. Undo
+// reverses a suppression.
+type RecommendationsSuppressParams struct {
+	PolicyID         string `json:"policyId,omitempty"`
+	RecommendationID string `json:"recommendationId,omitempty"`
+	Family           string `json:"family,omitempty"`
+	Ecosystem        string `json:"ecosystem,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	Undo             bool   `json:"undo,omitempty"`
+}
+
+// RecommendationsFeedbackParams records a local verdict.
+type RecommendationsFeedbackParams struct {
+	ScanID           string `json:"scanId,omitempty"`
+	RecommendationID string `json:"recommendationId"`
+	Family           string `json:"family,omitempty"`
+	Ecosystem        string `json:"ecosystem,omitempty"`
+	Verdict          string `json:"verdict"`
+	Note             string `json:"note,omitempty"`
+}
+
+// RecommendationsFeedbackResult confirms a stored verdict. LocalOnly restates
+// that feedback has no export path.
+type RecommendationsFeedbackResult struct {
+	RecommendationID string `json:"recommendationId"`
+	Verdict          string `json:"verdict"`
+	RecordedAt       string `json:"recordedAt"`
+	LocalOnly        bool   `json:"localOnly"`
+}
+
+// TrendsListParams bounds how much history to analyse.
+type TrendsListParams struct {
+	Limit int `json:"limit,omitempty"`
+}
+
+// TrendsListResult carries growth series and regression signals.
+type TrendsListResult struct {
+	Trends trend.Report `json:"trends"`
 }
 
 type ScanStatus struct {
@@ -149,7 +291,16 @@ type ScanReport struct {
 // present as the machine's recoverable storage. Deduplication needs a
 // plan-level grouping; see the Phase 3 task list.
 type AdviceSummary struct {
-	RecommendationCount    int            `json:"recommendationCount"`
+	// RecommendationCount is what the inbox shows; TotalRecommendationCount is
+	// what the rules produced. Savings bounds cover the total, because hiding
+	// advice must not read as recovering storage.
+	RecommendationCount      int `json:"recommendationCount"`
+	TotalRecommendationCount int `json:"totalRecommendationCount,omitempty"`
+	// WithheldSavings is the portion of the totals belonging to advice the
+	// policy is hiding.
+	WithheldSavingsLowBytes  int64 `json:"withheldSavingsLowBytes,omitempty"`
+	WithheldSavingsHighBytes int64 `json:"withheldSavingsHighBytes,omitempty"`
+
 	ByFamily               map[string]int `json:"byFamily,omitempty"`
 	ByRisk                 map[string]int `json:"byRisk,omitempty"`
 	BlockedCount           int            `json:"blockedCount"`
@@ -158,6 +309,15 @@ type AdviceSummary struct {
 	SavingsUncertain       bool           `json:"savingsUncertain,omitempty"`
 	Fit                    []FitHeadline  `json:"fit,omitempty"`
 	TopRecommendationTitle string         `json:"topRecommendationTitle,omitempty"`
+	// SuppressedCount and HiddenByRiskCount describe what the active policy
+	// withheld. A report that simply showed fewer recommendations would read as
+	// a machine with less to fix.
+	SuppressedCount   int `json:"suppressedCount,omitempty"`
+	HiddenByRiskCount int `json:"hiddenByRiskCount,omitempty"`
+	// FitMode and RiskThreshold record the policy this report was produced
+	// under, so two reports from two machines can be compared honestly.
+	FitMode       string `json:"fitMode,omitempty"`
+	RiskThreshold string `json:"riskThreshold,omitempty"`
 }
 
 // FitHeadline is the one-line fit outcome per ecosystem for reports.
@@ -294,6 +454,8 @@ type FitAssessment struct {
 	ProjectLocalInstallBytes int64       `json:"projectLocalInstallBytes,omitempty"`
 	SharedStoreBytes         int64       `json:"sharedStoreBytes,omitempty"`
 	VersionManagers          []string    `json:"versionManagers,omitempty"`
+	// FitMode names the policy weighting tradeoff that produced this ranking.
+	FitMode string `json:"fitMode,omitempty"`
 }
 
 type FitListResult struct {
@@ -363,6 +525,11 @@ type RecommendationSummary struct {
 
 	RuleID      string `json:"ruleId"`
 	RuleVersion int    `json:"ruleVersion"`
+	// Suppressed marks advice the user dismissed; HiddenByRisk marks advice above
+	// the policy's risk display threshold. Both travel with the item so a client
+	// listing withheld advice cannot present it as live.
+	Suppressed   bool `json:"suppressed,omitempty"`
+	HiddenByRisk bool `json:"hiddenByRisk,omitempty"`
 	// AdviceOnly restates the trust model on the wire: this protocol version has
 	// no method that can execute a recommendation. Mutation methods must arrive
 	// in a later protocol version, and a client must never infer permission to
@@ -373,6 +540,12 @@ type RecommendationSummary struct {
 type RecommendationsListResult struct {
 	ScanID          string                  `json:"scanId"`
 	Recommendations []RecommendationSummary `json:"recommendations"`
+	// SuppressedCount and HiddenByRiskCount report what the policy withheld, so
+	// a shorter inbox is always explainable rather than silently shorter.
+	SuppressedCount   int `json:"suppressedCount,omitempty"`
+	HiddenByRiskCount int `json:"hiddenByRiskCount,omitempty"`
+	// RiskThreshold is the policy's display threshold for this scan.
+	RiskThreshold string `json:"riskThreshold,omitempty"`
 }
 
 type RecommendationsGetResult struct {
