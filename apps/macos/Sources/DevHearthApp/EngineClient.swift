@@ -9,6 +9,7 @@ enum EngineClientError: LocalizedError {
     case engineNotRunning
     case engineExited(code: Int32)
     case engineRPC(RPCError)
+    case noCompletedScan
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +28,8 @@ enum EngineClientError: LocalizedError {
             return "The engine exited unexpectedly (code \(code))."
         case .engineRPC(let error):
             return error.localizedDescription
+        case .noCompletedScan:
+            return "No completed scan is available. Scan a folder first."
         }
     }
 }
@@ -39,31 +42,26 @@ final class EngineClient {
     private(set) var assets: [AssetSummary] = []
     private(set) var relationships: [RelationshipSummary] = []
     private(set) var portfolio: [PortfolioSummary] = []
+    private(set) var directoryChildren: [DirectoryChild] = []
+    private(set) var directoryPath = "" // redacted display path of current folder
+    private(set) var directoryPathKey = "" // absolute key for inventory.children
+    private(set) var directoryParentKey: String?
+    private(set) var lastReport: ScanReport?
     private(set) var errorMessage: String?
     private(set) var isScanning = false
+    private(set) var hasCompletedScan = false
     private(set) var enginePath: String?
+    private(set) var activeScanID: String?
 
     private var process: Process?
     private var stdinHandle: FileHandle?
     private var nextID = 0
-    private var helloRequestID: String?
-    private var scanRequestID: String?
-    private var assetsRequestID: String?
-    private var portfolioRequestID: String?
-    private var activeScanID: String?
-    private var scanRoots: [String] = []
-    private var assetsLoaded = false
-    private var portfolioLoaded = false
-    private var mode: SessionMode = .idle
+    private var pending: [String: CheckedContinuation<Data, Error>] = [:]
+    private var scanCompleteWaiters: [CheckedContinuation<Void, Error>] = []
+    private var readerTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
 
-    private enum SessionMode {
-        case idle
-        case probe
-        case scan
-    }
-
-    /// Locate and hello-negotiate the engine without starting a scan.
+    /// Locate and hello-negotiate the engine, leaving the process running.
     func connect() async {
         if let connectTask {
             await connectTask.value
@@ -82,18 +80,22 @@ final class EngineClient {
         do {
             errorMessage = nil
             status = "Locating engine…"
-            let executable = try resolveEngineURL()
-            enginePath = executable.path
-            try await runSession(mode: .probe, roots: [])
+            try await ensureEngineRunning()
+            let hello: HelloResult = try await request(method: "engine.hello", params: HelloParams())
+            guard hello.protocolVersion == protocolVersion,
+                  hello.schemaVersion == schemaVersion,
+                  hello.readOnly else {
+                throw EngineClientError.incompatibleEngine
+            }
             status = "Engine ready · choose a folder to scan"
         } catch {
             errorMessage = error.localizedDescription
             status = statusForFailure(error, duringScan: false)
+            stop()
         }
     }
 
     func start(roots: [String]) async {
-        // Avoid overlapping a probe connect with a scan.
         if let connectTask {
             await connectTask.value
         }
@@ -102,25 +104,133 @@ final class EngineClient {
             assets = []
             relationships = []
             portfolio = []
+            directoryChildren = []
+            directoryPath = ""
+            directoryPathKey = ""
+            directoryParentKey = nil
+            lastReport = nil
+            hasCompletedScan = false
+            activeScanID = nil
             errorMessage = nil
             isScanning = true
-            assetsLoaded = false
-            portfolioLoaded = false
-            scanRoots = roots
             status = "Starting scan…"
-            _ = try resolveEngineURL()
-            try await runSession(mode: .scan, roots: roots)
-            if progress.last?.complete != true {
+
+            try await ensureEngineRunning()
+            let started: ScanStarted = try await request(
+                method: "scan.start",
+                params: ScanStartParams(roots: roots, cancellationToken: UUID().uuidString)
+            )
+            activeScanID = started.scanId
+            status = "Scan running"
+            try await waitForScanComplete()
+            guard let scanID = activeScanID else {
                 throw EngineClientError.incompleteStream
             }
+
+            let listed: AssetsListResult = try await request(
+                method: "assets.list",
+                params: AssetsListParams(scanId: scanID)
+            )
+            assets = listed.assets
+            relationships = listed.relationships
+
+            let portfolioResult: PortfolioListResult = try await request(
+                method: "portfolio.list",
+                params: PortfolioListParams(scanId: scanID)
+            )
+            portfolio = portfolioResult.portfolio
+
+            let report: ScanReport = try await request(
+                method: "report.export",
+                params: ReportExportParams(scanId: scanID)
+            )
+            lastReport = report
+
+            try await loadChildren(pathKey: "")
+            hasCompletedScan = true
+            status = "Scan complete · \(assets.count) assets"
         } catch {
             errorMessage = error.localizedDescription
             status = statusForFailure(error, duringScan: true)
+            hasCompletedScan = false
         }
         isScanning = false
     }
 
+    func loadChildren(pathKey: String) async throws {
+        guard let scanID = activeScanID else {
+            throw EngineClientError.noCompletedScan
+        }
+        let result: InventoryChildrenResult = try await request(
+            method: "inventory.children",
+            params: InventoryChildrenParams(scanId: scanID, pathKey: pathKey.isEmpty ? nil : pathKey)
+        )
+        directoryChildren = result.children.sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory {
+                return lhs.isDirectory && !rhs.isDirectory
+            }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+        directoryPath = result.path
+        directoryPathKey = result.pathKey ?? ""
+        directoryParentKey = result.parentKey
+    }
+
+    func navigateInto(_ child: DirectoryChild) async {
+        guard child.isDirectory else { return }
+        do {
+            try await loadChildren(pathKey: child.pathKey)
+            status = "Browsing \(child.path)"
+        } catch {
+            errorMessage = error.localizedDescription
+            status = "Browse failed"
+        }
+    }
+
+    func navigateUp() async {
+        guard let parent = directoryParentKey else {
+            // Already at synthetic roots parent of selected roots.
+            do {
+                try await loadChildren(pathKey: "")
+                status = "Browsing scan roots"
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
+        do {
+            try await loadChildren(pathKey: parent)
+            status = directoryPath.isEmpty ? "Browsing scan roots" : "Browsing \(directoryPath)"
+        } catch {
+            errorMessage = error.localizedDescription
+            status = "Browse failed"
+        }
+    }
+
+    /// Fetches a redacted JSON report (default path redaction on the engine).
+    func exportReport() async throws -> ScanReport {
+        guard let scanID = activeScanID else {
+            throw EngineClientError.noCompletedScan
+        }
+        let report: ScanReport = try await request(
+            method: "report.export",
+            params: ReportExportParams(scanId: scanID)
+        )
+        lastReport = report
+        return report
+    }
+
     func stop() {
+        for (_, cont) in pending {
+            cont.resume(throwing: EngineClientError.engineNotRunning)
+        }
+        pending.removeAll()
+        for waiter in scanCompleteWaiters {
+            waiter.resume(throwing: EngineClientError.engineNotRunning)
+        }
+        scanCompleteWaiters.removeAll()
+        readerTask?.cancel()
+        readerTask = nil
         if let handle = stdinHandle {
             try? handle.close()
         }
@@ -130,16 +240,21 @@ final class EngineClient {
             process.waitUntilExit()
         }
         process = nil
-        mode = .idle
     }
 
     func cancelScan() {
         guard let activeScanID else { return }
-        do {
-            _ = try send(method: "scan.cancel", params: ScanCancelParams(scanId: activeScanID))
-            status = "Cancelling scan…"
-        } catch {
-            errorMessage = error.localizedDescription
+        Task {
+            do {
+                struct CancelStatus: Decodable { let scanId: String; let status: String }
+                let _: CancelStatus = try await request(
+                    method: "scan.cancel",
+                    params: ScanCancelParams(scanId: activeScanID)
+                )
+                status = "Cancelling scan…"
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -155,27 +270,18 @@ final class EngineClient {
                 return "Engine unavailable"
             case .engineExited:
                 return "Engine exited"
-            case .incompleteStream, .engineRPC, .invalidMessage:
+            case .incompleteStream, .engineRPC, .invalidMessage, .noCompletedScan:
                 return duringScan ? "Scan failed" : "Engine unavailable"
             }
         }
         return duringScan ? "Scan failed" : "Engine unavailable"
     }
 
-    private func runSession(mode sessionMode: SessionMode, roots: [String]) async throws {
+    private func ensureEngineRunning() async throws {
+        if let process, process.isRunning, stdinHandle != nil, readerTask != nil {
+            return
+        }
         stop()
-        defer { stop() }
-        mode = sessionMode
-        scanRoots = roots
-        nextID = 0
-        helloRequestID = nil
-        scanRequestID = nil
-        assetsRequestID = nil
-        portfolioRequestID = nil
-        activeScanID = nil
-        assetsLoaded = sessionMode == .probe
-        portfolioLoaded = sessionMode == .probe
-
         let executable = try resolveEngineURL()
         enginePath = executable.path
 
@@ -186,49 +292,57 @@ final class EngineClient {
         process.arguments = ["-database", inventoryDatabasePath()]
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
-        // Inherit stderr so engine diagnostics appear in the `make run` terminal
-        // and so a full stderr pipe cannot deadlock the child process.
         process.standardError = FileHandle.standardError
         process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-
         do {
             try process.run()
         } catch {
             throw EngineClientError.invalidMessage(detail: "failed to launch \(executable.path): \(error.localizedDescription)")
         }
         self.process = process
-        // Keep only the write end in the parent.
         stdinHandle = stdinPipe.fileHandleForWriting
+        nextID = 0
 
-        status = "Negotiating protocol…"
-        helloRequestID = try send(method: "engine.hello", params: HelloParams())
-
-        for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
-            try handle(line)
-            if sessionMode == .probe, helloRequestID == nil {
-                break
-            }
-            if sessionMode == .scan, assetsLoaded, portfolioLoaded {
-                break
-            }
-            if !process.isRunning {
-                if sessionMode == .scan, assetsLoaded, portfolioLoaded {
-                    break
+        let handle = stdoutPipe.fileHandleForReading
+        readerTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                for try await line in handle.bytes.lines {
+                    self.handleLine(line)
                 }
-                throw EngineClientError.engineExited(code: process.terminationStatus)
+            } catch {
+                self.failAllPending(error)
             }
-        }
-
-        if sessionMode == .probe {
-            return
-        }
-
-        if progress.last?.complete != true {
-            throw EngineClientError.incompleteStream
+            self.handleReaderEOF()
         }
     }
 
-    private func handle(_ line: String) throws {
+    private func waitForScanComplete() async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            if let last = progress.last, last.complete == true {
+                cont.resume()
+                return
+            }
+            scanCompleteWaiters.append(cont)
+        }
+    }
+
+    private func request<Params: Encodable, Result: Decodable>(method: String, params: Params) async throws -> Result {
+        let id = try send(method: method, params: params)
+        let data: Data = try await withCheckedThrowingContinuation { cont in
+            pending[id] = cont
+        }
+        let envelope = try JSONDecoder().decode(RPCEnvelope<Result>.self, from: data)
+        if let error = envelope.error {
+            throw EngineClientError.engineRPC(error)
+        }
+        guard let result = envelope.result else {
+            throw EngineClientError.invalidMessage(detail: "\(method) missing result")
+        }
+        return result
+    }
+
+    private func handleLine(_ line: String) {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let data = Data(trimmed.utf8)
@@ -237,99 +351,78 @@ final class EngineClient {
         do {
             header = try JSONDecoder().decode(RPCHeader.self, from: data)
         } catch {
-            throw EngineClientError.invalidMessage(detail: "header decode failed for: \(trimmed.prefix(240))")
+            failAllPending(EngineClientError.invalidMessage(detail: "header decode failed for: \(trimmed.prefix(240))"))
+            return
         }
         guard header.jsonrpc == "2.0" else {
-            throw EngineClientError.invalidMessage(detail: "bad jsonrpc in \(trimmed.prefix(240))")
+            failAllPending(EngineClientError.invalidMessage(detail: "bad jsonrpc"))
+            return
         }
 
-        // Parse / server errors may omit id (JSON-RPC allows null id on parse failure).
-        if let error = header.error {
-            let matchesPending =
-                header.id?.raw == helloRequestID ||
-                header.id?.raw == scanRequestID ||
-                header.id?.raw == assetsRequestID ||
-                header.id?.raw == portfolioRequestID
-            if header.id == nil || header.id?.isEmpty == true || matchesPending {
-                throw EngineClientError.engineRPC(error)
-            }
-        }
-
-        if header.id?.raw == helloRequestID {
-            let hello = try JSONDecoder().decode(RPCEnvelope<HelloResult>.self, from: data)
-            if let error = hello.error { throw EngineClientError.engineRPC(error) }
-            guard let result = hello.result,
-                  result.protocolVersion == protocolVersion,
-                  result.schemaVersion == schemaVersion,
-                  result.readOnly else { throw EngineClientError.incompatibleEngine }
-            helloRequestID = nil
-            if mode == .probe {
-                status = "Engine ready"
-                return
-            }
-            status = "Connected to read-only engine"
-            scanRequestID = try send(method: "scan.start", params: ScanStartParams(
-                roots: scanRoots, cancellationToken: UUID().uuidString
-            ))
-            return
-        }
-        if header.id?.raw == scanRequestID {
-            let started = try JSONDecoder().decode(RPCEnvelope<ScanStarted>.self, from: data)
-            if let error = started.error { throw EngineClientError.engineRPC(error) }
-            guard let result = started.result else {
-                throw EngineClientError.invalidMessage(detail: "scan.start missing result")
-            }
-            activeScanID = result.scanId
-            status = "Scan running"
-            return
-        }
-        if header.id?.raw == assetsRequestID {
-            let envelope = try JSONDecoder().decode(RPCEnvelope<AssetsListResult>.self, from: data)
-            if let error = envelope.error { throw EngineClientError.engineRPC(error) }
-            guard let result = envelope.result else {
-                throw EngineClientError.invalidMessage(detail: "assets.list missing result")
-            }
-            assets = result.assets
-            relationships = result.relationships
-            assetsLoaded = true
-            status = "Loaded \(assets.count) assets"
-            return
-        }
-        if header.id?.raw == portfolioRequestID {
-            let envelope = try JSONDecoder().decode(RPCEnvelope<PortfolioListResult>.self, from: data)
-            if let error = envelope.error { throw EngineClientError.engineRPC(error) }
-            guard let result = envelope.result else {
-                throw EngineClientError.invalidMessage(detail: "portfolio.list missing result")
-            }
-            portfolio = result.portfolio
-            portfolioLoaded = true
-            if assetsLoaded {
-                status = "Scan complete · \(assets.count) assets"
-            }
-            return
-        }
-        guard header.id == nil, header.method == "scan.progress" else {
-            throw EngineClientError.invalidMessage(detail: "unexpected message: \(trimmed.prefix(240))")
-        }
-        let event = try JSONDecoder().decode(ProgressEnvelope.self, from: data)
-        guard event.method == "scan.progress", event.params.scanId == activeScanID else {
-            throw EngineClientError.invalidMessage(detail: "progress for unknown scan")
-        }
-        progress.append(event.params)
-        if event.params.complete == true {
-            status = event.params.phase == "complete" ? "Scan complete" : "Scan \(event.params.phase)"
-            if let scanID = activeScanID {
-                assetsRequestID = try send(method: "assets.list", params: AssetsListParams(scanId: scanID))
-                portfolioRequestID = try send(method: "portfolio.list", params: PortfolioListParams(scanId: scanID))
+        if let id = header.id?.raw, !id.isEmpty, let cont = pending.removeValue(forKey: id) {
+            if let error = header.error {
+                cont.resume(throwing: EngineClientError.engineRPC(error))
             } else {
-                assetsLoaded = true
-                portfolioLoaded = true
+                cont.resume(returning: data)
             }
-        } else if event.params.phase == "detection", let found = event.params.assetsFound {
-            status = "Detecting assets… \(found) found"
-        } else {
-            status = "Scanning: \(event.params.phase)"
+            return
         }
+
+        if header.id == nil, header.method == "scan.progress" {
+            do {
+                let event = try JSONDecoder().decode(ProgressEnvelope.self, from: data)
+                guard event.method == "scan.progress" else { return }
+                if let activeScanID, event.params.scanId != activeScanID {
+                    return
+                }
+                progress.append(event.params)
+                if event.params.complete == true {
+                    status = event.params.phase == "complete" ? "Scan complete" : "Scan \(event.params.phase)"
+                    let waiters = scanCompleteWaiters
+                    scanCompleteWaiters.removeAll()
+                    for waiter in waiters {
+                        waiter.resume()
+                    }
+                } else if event.params.phase == "detection", let found = event.params.assetsFound {
+                    status = "Detecting assets… \(found) found"
+                } else if event.params.phase == "persist" {
+                    if let written = event.params.rowsWritten, let total = event.params.rowsTotal, total > 0 {
+                        status = "Saving inventory… \(written)/\(total)"
+                    } else {
+                        status = "Saving inventory…"
+                    }
+                } else {
+                    status = "Scanning: \(event.params.phase)"
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
+
+        if let error = header.error {
+            // Unmatched error without pending id.
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func handleReaderEOF() {
+        if let process, !process.isRunning {
+            failAllPending(EngineClientError.engineExited(code: process.terminationStatus))
+        } else {
+            failAllPending(EngineClientError.incompleteStream)
+        }
+    }
+
+    private func failAllPending(_ error: Error) {
+        for (_, cont) in pending {
+            cont.resume(throwing: error)
+        }
+        pending.removeAll()
+        for waiter in scanCompleteWaiters {
+            waiter.resume(throwing: error)
+        }
+        scanCompleteWaiters.removeAll()
     }
 
     @discardableResult
@@ -338,8 +431,6 @@ final class EngineClient {
         nextID += 1
         let id = String(nextID)
 
-        // Encode params first, then build the envelope with JSONSerialization so the
-        // wire format is always a single compact JSON object + newline.
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let paramsData = try encoder.encode(params)
@@ -386,10 +477,18 @@ final class EngineClient {
     private func resolveEngineURL() throws -> URL {
         var searched: [String] = []
         let fm = FileManager.default
+        // Sibling name must not case-fold to the Swift product (DevHearth) on APFS.
+        let colocatedEngineName = "devhearth-engine"
+        let selfPaths: Set<String> = Set(
+            [Bundle.main.executableURL?.path, CommandLine.arguments.first]
+                .compactMap { $0 }
+                .map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        )
 
         func consider(_ path: String) -> URL? {
-            let url = URL(fileURLWithPath: path)
+            let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
             searched.append(url.path)
+            if selfPaths.contains(url.path) { return nil }
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
                 return nil
@@ -401,17 +500,20 @@ final class EngineClient {
             if let url = consider(override) { return url }
         }
 
-        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "devhearth") {
-            searched.append(bundled.path)
-            if fm.isExecutableFile(atPath: bundled.path) { return bundled }
+        for auxiliary in [colocatedEngineName, "devhearth"] {
+            if let bundled = Bundle.main.url(forAuxiliaryExecutable: auxiliary) {
+                searched.append(bundled.path)
+                if let url = consider(bundled.path) { return url }
+            }
         }
 
-        if let exe = Bundle.main.executableURL?.deletingLastPathComponent() {
-            if let url = consider(exe.appendingPathComponent("devhearth").path) { return url }
+        let siblingDirs = [
+            Bundle.main.executableURL?.deletingLastPathComponent(),
+            URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent(),
+        ].compactMap { $0 }
+        for dir in siblingDirs {
+            if let url = consider(dir.appendingPathComponent(colocatedEngineName).path) { return url }
         }
-        let argv0 = CommandLine.arguments[0]
-        let argvURL = URL(fileURLWithPath: argv0).deletingLastPathComponent().appendingPathComponent("devhearth")
-        if let url = consider(argvURL.path) { return url }
 
         let cwd = fm.currentDirectoryPath
         let candidates = [

@@ -106,6 +106,52 @@ func TestAssetsListRedactsPathsAndIncludesEvidence(t *testing.T) {
 	}
 }
 
+func TestInventoryChildrenRedactsPathsAndRollsUp(t *testing.T) {
+	active := &activeScan{
+		status: "complete",
+		result: scan.Result{
+			Roots: []string{"/Users/example/Projects"},
+			Entries: []scan.Entry{
+				{Path: "/Users/example/Projects", Kind: "directory"},
+				{Path: "/Users/example/Projects/app", ParentPath: "/Users/example/Projects", Kind: "directory"},
+				{Path: "/Users/example/Projects/app/file.go", ParentPath: "/Users/example/Projects/app", Kind: "file", LogicalBytes: 100, AllocatedBytes: 4096},
+			},
+		},
+	}
+	active.dirIndex = scan.BuildDirectoryIndex(active.result)
+	active.pathIndex = map[string]scan.DirectoryNode{}
+	for _, nodes := range active.dirIndex {
+		for _, node := range nodes {
+			active.pathIndex[node.Path] = node
+		}
+	}
+
+	roots, ok := inventoryChildren("scan_01", "", active)
+	if !ok || len(roots.Children) != 1 {
+		t.Fatalf("roots = %#v ok=%v", roots, ok)
+	}
+	if roots.Children[0].Path != "<selected-root-1>" {
+		t.Fatalf("root display path = %q", roots.Children[0].Path)
+	}
+	if roots.Children[0].PathKey != "/Users/example/Projects" {
+		t.Fatalf("root pathKey = %q", roots.Children[0].PathKey)
+	}
+
+	kids, ok := inventoryChildren("scan_01", "/Users/example/Projects", active)
+	if !ok || len(kids.Children) != 1 {
+		t.Fatalf("children = %#v", kids)
+	}
+	if kids.Children[0].Path != "<selected-root-1>/app" {
+		t.Fatalf("child path = %q", kids.Children[0].Path)
+	}
+	if kids.Children[0].TotalAllocatedBytes != 4096 {
+		t.Fatalf("app total allocated = %d", kids.Children[0].TotalAllocatedBytes)
+	}
+	if strings.Contains(kids.Children[0].Path, "/Users/") {
+		t.Fatalf("absolute path leaked: %#v", kids.Children)
+	}
+}
+
 func TestAssetsListRedactsAttributePaths(t *testing.T) {
 	active := &activeScan{
 		status: "complete",

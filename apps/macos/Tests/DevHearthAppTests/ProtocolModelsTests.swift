@@ -34,6 +34,25 @@ import Testing
     #expect(result.assets[0].evidence?.first?.kind == "manifest")
 }
 
+@Test func decodesInventoryChildrenAndRoundTripsReport() throws {
+    let childrenData = Data(#"""
+    {"scanId":"scan_01","pathKey":"/Users/me/Projects","path":"<selected-root-1>","parentKey":"","children":[{"name":"app","path":"<selected-root-1>/app","pathKey":"/Users/me/Projects/app","kind":"directory","logicalBytes":0,"allocatedBytes":0,"totalLogicalBytes":100,"totalAllocatedBytes":4096,"directChildCount":2}]}
+    """#.utf8)
+    let children = try JSONDecoder().decode(InventoryChildrenResult.self, from: childrenData)
+    #expect(children.children.count == 1)
+    #expect(children.children[0].isDirectory)
+    #expect(children.children[0].totalAllocatedBytes == 4096)
+
+    let reportData = Data(#"""
+    {"scanId":"scan_01","status":"complete","roots":["<selected-root-1>"],"entriesVisited":12,"logicalBytes":100,"allocatedBytes":4096,"inaccessible":[],"assetCount":1,"assetsByKind":{"project":1},"portfolio":[{"ecosystem":"node","projectCount":1}]}
+    """#.utf8)
+    let report = try JSONDecoder().decode(ScanReport.self, from: reportData)
+    let encoded = try JSONEncoder().encode(report)
+    let roundTrip = try JSONDecoder().decode(ScanReport.self, from: encoded)
+    #expect(roundTrip.scanId == "scan_01")
+    #expect(roundTrip.roots == ["<selected-root-1>"])
+}
+
 @Test func engineSubprocessNegotiatesAndCompletesMockScan() throws {
     guard let path = ProcessInfo.processInfo.environment["DEVHEARTH_ENGINE_PATH"] else { return }
     let process = Process()

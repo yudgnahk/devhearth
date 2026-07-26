@@ -4,6 +4,7 @@
 - [Architecture and technology stack](ARCHITECTURE.md)
 - [Safety, privacy, and trust model](SAFETY_AND_PRIVACY.md)
 - [Roadmap](ROADMAP.md)
+- [Codebase audit and improvement plans](IMPROVEMENT_PLAN.md)
 - [Phase 0 task list](PHASE_0_TASKS.md)
 - [Phase 1 task list](PHASE_1_TASKS.md)
 - [Phase 2 task list](PHASE_2_TASKS.md)

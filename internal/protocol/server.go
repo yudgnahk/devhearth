@@ -21,11 +21,14 @@ import (
 )
 
 type ServerOptions struct {
-	MockScan   bool
-	Logger     *slog.Logger
-	Inventory  func(context.Context, []string, func(scan.Progress)) (scan.Result, error)
-	Detect     func(context.Context, scan.Result, func(detect.Progress)) (assets.Graph, error)
-	OnComplete func(context.Context, scan.Result, assets.Graph, string) error
+	MockScan  bool
+	Logger    *slog.Logger
+	Inventory func(context.Context, []string, func(scan.Progress)) (scan.Result, error)
+	Detect    func(context.Context, scan.Result, func(detect.Progress)) (assets.Graph, error)
+	// OnComplete persists a finished scan. progress may be nil; when non-nil it
+	// reports durable rows written so far (written/total) during persistence.
+	// dirIndex is the precomputed inventory rollup for this result (may be empty).
+	OnComplete func(ctx context.Context, result scan.Result, graph assets.Graph, status string, dirIndex map[string][]scan.DirectoryNode, progress func(written, total int64)) error
 }
 
 type Server struct {
@@ -38,10 +41,12 @@ type Server struct {
 }
 
 type activeScan struct {
-	cancel context.CancelFunc
-	status string
-	result scan.Result
-	graph  assets.Graph
+	cancel    context.CancelFunc
+	status    string
+	result    scan.Result
+	graph     assets.Graph
+	dirIndex  map[string][]scan.DirectoryNode // parent path -> direct children
+	pathIndex map[string]scan.DirectoryNode   // path -> node (for parent lookup)
 }
 
 func NewServer(options ServerOptions) *Server {
@@ -224,6 +229,23 @@ func (s *Server) handle(ctx context.Context, encoder *json.Encoder, request Requ
 		portfolio := portfolioList(params.ScanID, current)
 		s.scansMu.Unlock()
 		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: portfolio})
+	case "inventory.children":
+		var params InventoryChildrenParams
+		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" {
+			return s.write(encoder, failure(request.ID, -32602, "scanId is required"))
+		}
+		s.scansMu.Lock()
+		current, found := s.scans[params.ScanID]
+		if !found || current.status == "running" || current.status == "cancelling" {
+			s.scansMu.Unlock()
+			return s.write(encoder, failure(request.ID, -32004, "completed scan inventory is not available"))
+		}
+		result, ok := inventoryChildren(params.ScanID, params.PathKey, current)
+		s.scansMu.Unlock()
+		if !ok {
+			return s.write(encoder, failure(request.ID, -32006, "inventory path not found in scan"))
+		}
+		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: result})
 	default:
 		return s.write(encoder, failure(request.ID, -32601, "method not found"))
 	}
@@ -267,17 +289,40 @@ func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID stri
 			status = "failed"
 		}
 	}
+	// Build the drill-down index once and reuse it for persistence + live queries.
+	dirIndex := scan.BuildDirectoryIndex(result)
+	pathIndex := make(map[string]scan.DirectoryNode, len(result.Entries))
+	for _, nodes := range dirIndex {
+		for _, node := range nodes {
+			pathIndex[node.Path] = node
+		}
+	}
+
 	if s.options.OnComplete != nil {
-		if persistErr := s.options.OnComplete(context.Background(), result, graph, status); persistErr != nil {
+		_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{
+			ScanID: scanID, Phase: "persist", EntriesVisited: result.EntriesVisited,
+			AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)),
+		}})
+		persistProgress := func(written, total int64) {
+			_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{
+				ScanID: scanID, Phase: "persist", EntriesVisited: result.EntriesVisited,
+				AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)),
+				RowsWritten: written, RowsTotal: total,
+			}})
+		}
+		if persistErr := s.options.OnComplete(context.Background(), result, graph, status, dirIndex, persistProgress); persistErr != nil {
 			s.options.Logger.Error("persist scan", "error", persistErr)
 			status = "failed"
 		}
 	}
+
 	s.scansMu.Lock()
 	current := s.scans[scanID]
 	current.status = status
 	current.result = result
 	current.graph = graph
+	current.dirIndex = dirIndex
+	current.pathIndex = pathIndex
 	s.scansMu.Unlock()
 	// Complete marks a terminal event; clients must not wait forever after a
 	// cancellation or failure. The phase preserves the outcome.
@@ -330,6 +375,54 @@ func assetsList(id string, active *activeScan) AssetsListResult {
 
 func portfolioList(id string, active *activeScan) PortfolioListResult {
 	return PortfolioListResult{ScanID: id, Portfolio: toProtocolPortfolio(assets.SummarizePortfolio(active.graph))}
+}
+
+func inventoryChildren(id, pathKey string, active *activeScan) (InventoryChildrenResult, bool) {
+	if active.dirIndex == nil {
+		active.dirIndex = scan.BuildDirectoryIndex(active.result)
+	}
+	parentKey := pathKey
+	if parentKey != "" {
+		if _, ok := active.pathIndex[parentKey]; !ok {
+			// Allow listing when path exists only as a parent of known children.
+			if _, hasChildren := active.dirIndex[parentKey]; !hasChildren {
+				return InventoryChildrenResult{}, false
+			}
+		}
+	}
+	nodes := scan.ChildrenOf(active.dirIndex, parentKey)
+	children := make([]DirectoryChild, 0, len(nodes))
+	for _, node := range nodes {
+		children = append(children, DirectoryChild{
+			Name:                node.Name,
+			Path:                redactPath(node.Path, active.result.Roots),
+			PathKey:             node.Path,
+			Kind:                node.Kind,
+			LogicalBytes:        node.LogicalBytes,
+			AllocatedBytes:      node.AllocatedBytes,
+			TotalLogicalBytes:   node.TotalLogicalBytes,
+			TotalAllocatedBytes: node.TotalAllocatedBytes,
+			DirectChildCount:    node.DirectChildCount,
+			IsSymlink:           node.IsSymlink,
+		})
+	}
+	displayPath := ""
+	parentOfParent := ""
+	if parentKey == "" {
+		displayPath = ""
+	} else {
+		displayPath = redactPath(parentKey, active.result.Roots)
+		if node, ok := active.pathIndex[parentKey]; ok {
+			parentOfParent = node.ParentPath
+		}
+	}
+	return InventoryChildrenResult{
+		ScanID:    id,
+		PathKey:   parentKey,
+		Path:      displayPath,
+		ParentKey: parentOfParent,
+		Children:  children,
+	}, true
 }
 
 func summarizeAsset(asset assets.Asset, roots []string) AssetSummary {

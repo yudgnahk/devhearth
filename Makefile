@@ -55,11 +55,12 @@ build-app: build-engine ## Build the SwiftUI executable and place the engine bes
 	$(SWIFT) build --package-path "$(MACOS_PKG)"
 	@test -x "$(SWIFT_BIN)"
 	@# SPM executables are not app bundles; co-locate the engine so the UI can
-	@# find it without DEVHEARTH_ENGINE_PATH when launched from make run.
-	cp -f "$(ENGINE)" "$(dir $(SWIFT_BIN))devhearth"
-	chmod +x "$(dir $(SWIFT_BIN))devhearth"
+	@# find it without DEVHEARTH_ENGINE_PATH. Use a name that does not collide with
+	@# DevHearth on case-insensitive APFS (devhearth == DevHearth).
+	cp -f "$(ENGINE)" "$(dir $(SWIFT_BIN))devhearth-engine"
+	chmod +x "$(dir $(SWIFT_BIN))devhearth-engine"
 	@echo "app:    $(SWIFT_BIN)"
-	@echo "engine: $(dir $(SWIFT_BIN))devhearth"
+	@echo "engine: $(dir $(SWIFT_BIN))devhearth-engine"
 
 ##@ Test
 
@@ -91,7 +92,8 @@ run: run-app ## Alias for run-app
 
 run-app: build ## Launch SwiftUI app with the local engine
 	@test -x "$(ENGINE)"
-	@test -x "$(dir $(SWIFT_BIN))devhearth"
+	@test -x "$(SWIFT_BIN)"
+	@test -x "$(dir $(SWIFT_BIN))devhearth-engine"
 	@echo "Launching DevHearth"
 	@echo "  app:    $(SWIFT_BIN)"
 	@echo "  engine: $(ENGINE)"
