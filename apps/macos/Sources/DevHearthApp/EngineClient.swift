@@ -477,10 +477,18 @@ final class EngineClient {
     private func resolveEngineURL() throws -> URL {
         var searched: [String] = []
         let fm = FileManager.default
+        // Sibling name must not case-fold to the Swift product (DevHearth) on APFS.
+        let colocatedEngineName = "devhearth-engine"
+        let selfPaths: Set<String> = Set(
+            [Bundle.main.executableURL?.path, CommandLine.arguments.first]
+                .compactMap { $0 }
+                .map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        )
 
         func consider(_ path: String) -> URL? {
-            let url = URL(fileURLWithPath: path)
+            let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
             searched.append(url.path)
+            if selfPaths.contains(url.path) { return nil }
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
                 return nil
@@ -492,17 +500,20 @@ final class EngineClient {
             if let url = consider(override) { return url }
         }
 
-        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "devhearth") {
-            searched.append(bundled.path)
-            if fm.isExecutableFile(atPath: bundled.path) { return bundled }
+        for auxiliary in [colocatedEngineName, "devhearth"] {
+            if let bundled = Bundle.main.url(forAuxiliaryExecutable: auxiliary) {
+                searched.append(bundled.path)
+                if let url = consider(bundled.path) { return url }
+            }
         }
 
-        if let exe = Bundle.main.executableURL?.deletingLastPathComponent() {
-            if let url = consider(exe.appendingPathComponent("devhearth").path) { return url }
+        let siblingDirs = [
+            Bundle.main.executableURL?.deletingLastPathComponent(),
+            URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent(),
+        ].compactMap { $0 }
+        for dir in siblingDirs {
+            if let url = consider(dir.appendingPathComponent(colocatedEngineName).path) { return url }
         }
-        let argv0 = CommandLine.arguments[0]
-        let argvURL = URL(fileURLWithPath: argv0).deletingLastPathComponent().appendingPathComponent("devhearth")
-        if let url = consider(argvURL.path) { return url }
 
         let cwd = fm.currentDirectoryPath
         let candidates = [
