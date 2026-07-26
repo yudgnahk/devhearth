@@ -141,6 +141,13 @@ type ScanReport struct {
 
 // AdviceSummary is the report-level roll-up of Phase 3 analysis. Savings stay
 // ranges, and the total is a sum of ranges rather than a single figure.
+//
+// Known limitation: two rules may propose the same change from the same
+// evidence (for example shared-store adoption and portfolio fit both landing on
+// pnpm), and these bounds sum every recommendation, so overlapping advice is
+// counted twice. Treat the totals as an upper-bound indication, not a figure to
+// present as the machine's recoverable storage. Deduplication needs a
+// plan-level grouping; see the Phase 3 task list.
 type AdviceSummary struct {
 	RecommendationCount    int            `json:"recommendationCount"`
 	ByFamily               map[string]int `json:"byFamily,omitempty"`

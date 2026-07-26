@@ -47,6 +47,23 @@ never mutates a scanned path.
 - [ ] Rule: pin missing runtime versions, package managers, or lockfiles
       (SPECS §7.8 family 9).
 - [ ] Rule: shared local service and unused architecture variant families.
+- [ ] Deduplicate overlapping recommendations before any total is summed.
+      Two rules can propose the same change from the same evidence: on the
+      polyglot fixture, `adopt_shared_store` ("Share node dependencies through
+      the pnpm store", 1024–3276 B) and `standardize_portfolio_fit`
+      ("Standardize node on pnpm", 1024–3276 B) both describe adopting pnpm.
+      Two effects, one cosmetic and one a defect:
+      - The inbox shows two cards for one piece of work.
+      - `report.export` sums bounds across recommendations, so those bytes are
+        counted twice (fixture roll-up reports 2048–10648 where the pnpm
+        migration contributes 1024–3276 once, not twice). **The report total
+        overstates savings until this is resolved.**
+      Rules are deliberately independent, so the fix does not belong inside a
+      rule. It needs a model concept the graph does not have yet: either an
+      overlap/supersedes relationship between recommendations, or a plan-level
+      aggregation that groups by proposed action and affected assets before
+      summing. Resolve this together with plan comparison below, since both
+      need the same grouping.
 - [ ] Plan comparison UI with before/after estimates.
 - [ ] Policy-driven fit weights (waits on the Phase 4 policy format).
 
