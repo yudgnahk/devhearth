@@ -273,9 +273,17 @@ func (s *Store) SaveWithOptions(ctx context.Context, result scan.Result, advice 
 		entries = append(entries, entry)
 	}
 	sortEntriesByPathDepth(entries)
+	// Row ids continue after the highest id already stored: `filesystem_entries.id`
+	// is global, so numbering each scan from 1 would collide with every earlier
+	// scan in the same database. Read inside the transaction, with the store
+	// limited to one connection, so no concurrent writer can claim the same range.
+	var highestEntryID int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM filesystem_entries`).Scan(&highestEntryID); err != nil {
+		return "", fmt.Errorf("read highest filesystem entry id: %w", err)
+	}
 	pathToEntryID := make(map[string]int64, len(entries))
 	for i, entry := range entries {
-		pathToEntryID[entry.Path] = int64(i + 1)
+		pathToEntryID[entry.Path] = highestEntryID + int64(i) + 1
 	}
 
 	dirIndex := options.DirectoryIndex
