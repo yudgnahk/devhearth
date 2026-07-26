@@ -5,3 +5,4 @@ apps/macos/.build/
 build/
 *.sqlite
 *.sqlite-*
+.gitnexus
