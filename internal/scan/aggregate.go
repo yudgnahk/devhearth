@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DirectoryNode is a rolled-up directory (or file) node for inventory drill-down.
@@ -19,6 +20,11 @@ type DirectoryNode struct {
 	TotalAllocatedBytes int64
 	DirectChildCount    int
 	IsSymlink           bool
+	// ModifiedAt is this entry's own modification time.
+	ModifiedAt time.Time
+	// HardLinkAliasCount counts entries in the subtree whose allocated bytes were
+	// charged to an earlier alias, which makes subtree totals a lower bound.
+	HardLinkAliasCount int64
 }
 
 // BuildDirectoryIndex computes direct-child lists and directory rollups from a
@@ -35,6 +41,10 @@ func BuildDirectoryIndex(result Result) map[string][]DirectoryNode {
 				name = entry.Path
 			}
 		}
+		aliases := int64(0)
+		if entry.HardLinkAlias {
+			aliases = 1
+		}
 		node := &DirectoryNode{
 			Path:                entry.Path,
 			ParentPath:          entry.ParentPath,
@@ -45,6 +55,8 @@ func BuildDirectoryIndex(result Result) map[string][]DirectoryNode {
 			TotalLogicalBytes:   entry.LogicalBytes,
 			TotalAllocatedBytes: entry.AllocatedBytes,
 			IsSymlink:           entry.IsSymlink,
+			ModifiedAt:          entry.ModifiedAt,
+			HardLinkAliasCount:  aliases,
 		}
 		byPath[entry.Path] = node
 		parent := entry.ParentPath
@@ -72,6 +84,7 @@ func BuildDirectoryIndex(result Result) map[string][]DirectoryNode {
 			child := byPath[childPath]
 			node.TotalLogicalBytes += child.TotalLogicalBytes
 			node.TotalAllocatedBytes += child.TotalAllocatedBytes
+			node.HardLinkAliasCount += child.HardLinkAliasCount
 		}
 	}
 

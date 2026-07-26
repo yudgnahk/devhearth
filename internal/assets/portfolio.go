@@ -3,7 +3,8 @@ package assets
 import "sort"
 
 // SummarizePortfolio groups graph assets by ecosystem for tool-portfolio views.
-// Fit scoring is intentionally out of scope for Phase 2.
+// Byte totals are populated only for assets that carry attributed sizes; fit
+// scoring consumes these summaries but lives in internal/portfolio.
 func SummarizePortfolio(graph Graph) []PortfolioSummary {
 	byEco := map[string]*PortfolioSummary{}
 	ensure := func(eco string) *PortfolioSummary {
@@ -48,13 +49,20 @@ func SummarizePortfolio(graph Graph) []PortfolioSummary {
 			}
 			versionManagers[eco][name] = struct{}{}
 		case KindProjectLocalInstall:
-			summary.ProjectLocalInstallCount++ // bytes deferred until size attribution
+			summary.ProjectLocalInstallCount++
+			summary.ProjectLocalInstallBytes += asset.Size.ExclusiveAllocatedBytes
 		case KindDependencyStore:
 			summary.SharedStoreCount++
+			summary.SharedStoreBytes += asset.Size.ExclusiveAllocatedBytes
 		case KindDownloadCache:
 			summary.DownloadCacheCount++
+			summary.DownloadCacheBytes += asset.Size.ExclusiveAllocatedBytes
 		case KindBuildOutput:
 			summary.BuildOutputCount++
+			summary.BuildOutputBytes += asset.Size.ExclusiveAllocatedBytes
+		}
+		if asset.Size.Uncertain {
+			summary.SizesUncertain = true
 		}
 	}
 

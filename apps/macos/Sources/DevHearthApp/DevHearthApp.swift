@@ -26,6 +26,8 @@ struct ContentView: View {
     private enum DetailTab: String, CaseIterable, Identifiable {
         case inventory = "Inventory"
         case assets = "Assets"
+        case advice = "Advice"
+        case fit = "Fit"
         var id: String { rawValue }
     }
 
@@ -81,6 +83,16 @@ struct ContentView: View {
                             Text("\(inaccessible.count) inaccessible path(s)")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
+                        }
+                        if let advice = report.advice, advice.recommendationCount > 0 {
+                            Text("\(advice.recommendationCount) recommendation(s) · est. \(formatBytes(advice.savingsLowBytes))–\(formatBytes(advice.savingsHighBytes))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if advice.blockedCount > 0 {
+                                Text("\(advice.blockedCount) blocked pending verification")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
                         }
                     }
                 }
@@ -138,6 +150,10 @@ struct ContentView: View {
                             description: Text("Scan a folder, then pick an asset from the sidebar.")
                         )
                     }
+                case .advice:
+                    AdviceView(engine: engine)
+                case .fit:
+                    FitView(engine: engine)
                 }
             }
         }
@@ -191,6 +207,12 @@ struct ContentView: View {
         }
         if let managers = item.versionManagers, !managers.isEmpty {
             parts.append("VM: \(managers.joined(separator: ", "))")
+        }
+        if let bytes = item.projectLocalInstallBytes, bytes > 0 {
+            parts.append("local \(formatBytes(bytes))")
+        }
+        if let bytes = item.sharedStoreBytes, bytes > 0 {
+            parts.append("stores \(formatBytes(bytes))")
         }
         return parts.joined(separator: " · ")
     }
@@ -323,6 +345,12 @@ struct AssetDetailView: View {
                     labeled("Class", classification)
                 }
                 labeled("Detector", "\(asset.detectorId) v\(asset.detectorVersion)")
+                if let size = asset.size, size.attributed {
+                    labeled("Allocated", sizeLine(size))
+                }
+                if let activity = asset.lastActivityAt, !activity.isEmpty {
+                    labeled("Last source activity", activity)
+                }
 
                 if let evidence = asset.evidence, !evidence.isEmpty {
                     Text("Evidence").font(.headline)
@@ -358,5 +386,21 @@ struct AssetDetailView: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
+    }
+
+    /// Shows the subtree total and, when they differ, the exclusive share that
+    /// excludes nested assets such as a project's own node_modules.
+    private func sizeLine(_ size: AssetSize) -> String {
+        var line = formatBytes(size.allocatedBytes)
+        if size.exclusiveAllocatedBytes != size.allocatedBytes {
+            line += " (\(formatBytes(size.exclusiveAllocatedBytes)) excluding nested assets)"
+        }
+        if size.shared == true {
+            line += " · shared store"
+        }
+        if size.uncertain == true {
+            line += " · lower bound (hard links present)"
+        }
+        return line
     }
 }

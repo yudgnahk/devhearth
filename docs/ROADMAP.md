@@ -53,7 +53,8 @@ Exit criteria: Most storage within representative developer roots is attributed 
 Status: In progress. The first asset-graph slice provides multi-ecosystem
 path-signature detectors, Git repo/worktree detection, portfolio summaries,
 SQLite asset persistence, protocol asset/portfolio queries, and a preview
-evidence inspector. Size attribution, deep Git status, richer runtime
+evidence inspector. Size and activity attribution landed with the Phase 3
+advisor slice. Deep Git status, richer runtime inventory, container data-root
 inventory, and graph visualization remain. See [the Phase 2 task list](PHASE_2_TASKS.md).
 
 ## Phase 3 — Optimization advisor
@@ -71,6 +72,16 @@ inventory, and graph visualization remain. See [the Phase 2 task list](PHASE_2_T
 - Plan comparison UI and fit-factor evidence views.
 
 Exit criteria: The product provides useful, evidence-backed structural recommendations—including portfolio-fit rankings with tradeoffs—without modifying the filesystem or declaring a single absolute best tool.
+
+Status: In progress. The first advisor slice provides asset size and source
+activity attribution, multi-factor fit scoring with a stay-put baseline (deep
+for Node and Python), six deterministic rule families (runtime consolidation,
+shared-store adoption, portfolio fit, hibernation candidates, obsolete
+worktrees, duplicate AI models), `fit.*` and `recommendations.*` protocol
+methods, SQLite persistence (migration 005), and a recommendation inbox plus
+fit-factor views in the preview UI. Deep Git verification, staged content
+hashing, installed-version comparison, and plan comparison remain. See
+[the Phase 3 task list](PHASE_3_TASKS.md).
 
 ## Phase 4 — Incremental monitoring and portable policy
 

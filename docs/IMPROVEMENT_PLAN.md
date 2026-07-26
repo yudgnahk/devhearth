@@ -257,11 +257,17 @@ shippable and test-first friendly.
 | Scan history and reload | Direct payoff of R1; enables "what grew since last week?" |
 | Resumable checkpoints, pause/resume | Open Phase 1 task; persist the walk frontier per volume |
 | Signed `.app` with security-scoped bookmarks | Open Phase 1 task; today it is an SPM binary plus `DEVHEARTH_ENGINE_PATH`. Needs an Xcode/xcodegen project, codesign, notarization, engine bundled as an auxiliary executable |
-| **Size attribution onto assets** | Open Phase 2 task; join `directory_aggregates` totals onto asset paths. Prerequisite for any advisor value — without bytes, recommendations cannot be ranked |
+| ~~**Size attribution onto assets**~~ | Done in `internal/attribute`: subtree totals from the inventory rollup, exclusive bytes that subtract nested assets, shared-store and hard-link uncertainty flags, plus source activity that skips generated trees and `.git` |
 | Deep Git status | Guarded `git` subprocess behind an interface (dirty tree, unpushed commits); feeds hibernation safety |
 | Homebrew / Xcode / SDKMAN / Docker Desktop data roots | Beyond directory-name signatures; these are the largest real consumers on developer Macs |
 
 ### U2 — Begin Phase 3, the optimization advisor
+
+Status: started. The framework, fit scoring, six rule families, `fit.*` and
+`recommendations.*` methods, persistence, and the inbox UI are in place; see
+[the Phase 3 task list](PHASE_3_TASKS.md). Duplicate-checkout detection by
+remote and stale download caches are not yet rules, and both hibernation and
+worktree advice stay blocked until deep Git verification lands.
 
 1. Deterministic rule framework:
    `Rule(graph, sizes) -> []Recommendation{savingsRange, confidence, evidence, restorationCost, blockers, risk}`

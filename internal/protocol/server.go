@@ -14,7 +14,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/detect"
 	"github.com/yudgnahk/devhearth/internal/scan"
@@ -25,10 +27,16 @@ type ServerOptions struct {
 	Logger    *slog.Logger
 	Inventory func(context.Context, []string, func(scan.Progress)) (scan.Result, error)
 	Detect    func(context.Context, scan.Result, func(detect.Progress)) (assets.Graph, error)
+	// Advise runs read-only Phase 3 analysis over the detected graph: size and
+	// activity attribution, portfolio fit, and recommendation rules. It receives
+	// the inventory rollup so attribution does not rebuild it. When nil, the
+	// detector graph is used unchanged and no advice is produced.
+	Advise func(ctx context.Context, result scan.Result, graph assets.Graph, dirIndex map[string][]scan.DirectoryNode) (advisor.Result, error)
 	// OnComplete persists a finished scan. progress may be nil; when non-nil it
 	// reports durable rows written so far (written/total) during persistence.
 	// dirIndex is the precomputed inventory rollup for this result (may be empty).
-	OnComplete func(ctx context.Context, result scan.Result, graph assets.Graph, status string, dirIndex map[string][]scan.DirectoryNode, progress func(written, total int64)) error
+	// advice carries the attributed graph, so persistence must use advice.Graph.
+	OnComplete func(ctx context.Context, result scan.Result, advice advisor.Result, status string, dirIndex map[string][]scan.DirectoryNode, progress func(written, total int64)) error
 }
 
 type Server struct {
@@ -41,10 +49,12 @@ type Server struct {
 }
 
 type activeScan struct {
-	cancel    context.CancelFunc
-	status    string
-	result    scan.Result
-	graph     assets.Graph
+	cancel context.CancelFunc
+	status string
+	result scan.Result
+	// advice holds the attributed graph plus fit and recommendation output. Its
+	// Graph field is the authoritative asset view for every query.
+	advice    advisor.Result
 	dirIndex  map[string][]scan.DirectoryNode // parent path -> direct children
 	pathIndex map[string]scan.DirectoryNode   // path -> node (for parent lookup)
 }
@@ -206,7 +216,7 @@ func (s *Server) handle(ctx context.Context, encoder *json.Encoder, request Requ
 			s.scansMu.Unlock()
 			return s.write(encoder, failure(request.ID, -32004, "completed scan assets are not available"))
 		}
-		for _, asset := range current.graph.Assets {
+		for _, asset := range current.advice.Graph.Assets {
 			if asset.ID == params.AssetID {
 				summary := summarizeAsset(asset, current.result.Roots)
 				s.scansMu.Unlock()
@@ -246,9 +256,76 @@ func (s *Server) handle(ctx context.Context, encoder *json.Encoder, request Requ
 			return s.write(encoder, failure(request.ID, -32006, "inventory path not found in scan"))
 		}
 		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: result})
+	case "fit.list":
+		var params FitListParams
+		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" {
+			return s.write(encoder, failure(request.ID, -32602, "scanId is required"))
+		}
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan fit analysis is not available",
+			func(current *activeScan) (any, *Error) {
+				return fitList(params.ScanID, current), nil
+			})
+	case "fit.get":
+		var params FitGetParams
+		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" || params.Ecosystem == "" {
+			return s.write(encoder, failure(request.ID, -32602, "scanId and ecosystem are required"))
+		}
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan fit analysis is not available",
+			func(current *activeScan) (any, *Error) {
+				assessment, found := findAssessment(current, params.Ecosystem)
+				if !found {
+					return nil, &Error{Code: -32007, Message: "no fit assessment for that ecosystem"}
+				}
+				return FitGetResult{ScanID: params.ScanID, Fit: assessment}, nil
+			})
+	case "recommendations.list":
+		var params RecommendationsListParams
+		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" {
+			return s.write(encoder, failure(request.ID, -32602, "scanId is required"))
+		}
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan recommendations are not available",
+			func(current *activeScan) (any, *Error) {
+				return recommendationsList(params.ScanID, current, params.Family), nil
+			})
+	case "recommendations.get":
+		var params RecommendationsGetParams
+		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" || params.RecommendationID == "" {
+			return s.write(encoder, failure(request.ID, -32602, "scanId and recommendationId are required"))
+		}
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan recommendations are not available",
+			func(current *activeScan) (any, *Error) {
+				recommendation, found := findRecommendation(current, params.RecommendationID)
+				if !found {
+					return nil, &Error{Code: -32008, Message: "recommendation not found"}
+				}
+				return RecommendationsGetResult{ScanID: params.ScanID, Recommendation: recommendation}, nil
+			})
 	default:
 		return s.write(encoder, failure(request.ID, -32601, "method not found"))
 	}
+}
+
+// withCompletedScan resolves a scan that has finished and projects a result
+// while holding the scan lock, so a concurrent scan cannot swap state midway.
+func (s *Server) withCompletedScan(
+	encoder *json.Encoder,
+	requestID json.RawMessage,
+	scanID string,
+	unavailable string,
+	project func(*activeScan) (any, *Error),
+) error {
+	s.scansMu.Lock()
+	current, found := s.scans[scanID]
+	if !found || current.status == "running" || current.status == "cancelling" {
+		s.scansMu.Unlock()
+		return s.write(encoder, failure(requestID, -32004, unavailable))
+	}
+	result, projectErr := project(current)
+	s.scansMu.Unlock()
+	if projectErr != nil {
+		return s.write(encoder, failure(requestID, projectErr.Code, projectErr.Message))
+	}
+	return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: requestID, Result: result})
 }
 
 func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID string, roots []string) {
@@ -289,7 +366,8 @@ func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID stri
 			status = "failed"
 		}
 	}
-	// Build the drill-down index once and reuse it for persistence + live queries.
+	// Build the drill-down index once and reuse it for advice, persistence, and
+	// live queries.
 	dirIndex := scan.BuildDirectoryIndex(result)
 	pathIndex := make(map[string]scan.DirectoryNode, len(result.Entries))
 	for _, nodes := range dirIndex {
@@ -298,19 +376,40 @@ func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID stri
 		}
 	}
 
+	// Analysis runs before persistence so the durable inventory records the
+	// attributed graph, the fit assessments, and the recommendations together.
+	advice := advisor.Result{Graph: graph}
+	if status == "complete" && s.options.Advise != nil {
+		_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{
+			ScanID: scanID, Phase: "advice", EntriesVisited: result.EntriesVisited,
+			AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)),
+		}})
+		analysed, adviseErr := s.options.Advise(ctx, result, graph, dirIndex)
+		switch {
+		case errors.Is(adviseErr, context.Canceled):
+			status = "cancelled"
+		case adviseErr != nil:
+			s.options.Logger.Error("analyze scan", "error", adviseErr)
+			status = "failed"
+		default:
+			advice = analysed
+		}
+	}
+
 	if s.options.OnComplete != nil {
+		assetsFound := int64(len(advice.Graph.Assets))
 		_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{
 			ScanID: scanID, Phase: "persist", EntriesVisited: result.EntriesVisited,
-			AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)),
+			AllocatedBytes: result.AllocatedBytes, AssetsFound: assetsFound,
 		}})
 		persistProgress := func(written, total int64) {
 			_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{
 				ScanID: scanID, Phase: "persist", EntriesVisited: result.EntriesVisited,
-				AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)),
+				AllocatedBytes: result.AllocatedBytes, AssetsFound: assetsFound,
 				RowsWritten: written, RowsTotal: total,
 			}})
 		}
-		if persistErr := s.options.OnComplete(context.Background(), result, graph, status, dirIndex, persistProgress); persistErr != nil {
+		if persistErr := s.options.OnComplete(context.Background(), result, advice, status, dirIndex, persistProgress); persistErr != nil {
 			s.options.Logger.Error("persist scan", "error", persistErr)
 			status = "failed"
 		}
@@ -320,7 +419,7 @@ func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID stri
 	current := s.scans[scanID]
 	current.status = status
 	current.result = result
-	current.graph = graph
+	current.advice = advice
 	current.dirIndex = dirIndex
 	current.pathIndex = pathIndex
 	s.scansMu.Unlock()
@@ -328,7 +427,8 @@ func (s *Server) runScan(ctx context.Context, encoder *json.Encoder, scanID stri
 	// cancellation or failure. The phase preserves the outcome.
 	_ = s.write(encoder, Notification{JSONRPC: JSONRPCVersion, Method: "scan.progress", Params: ScanProgress{
 		ScanID: scanID, Phase: status, EntriesVisited: result.EntriesVisited,
-		AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(graph.Assets)), Complete: true,
+		AllocatedBytes: result.AllocatedBytes, AssetsFound: int64(len(advice.Graph.Assets)),
+		RecommendationsFound: int64(len(advice.Recommendations)), Complete: true,
 	}})
 }
 
@@ -346,25 +446,26 @@ func report(id string, active *activeScan) ScanReport {
 		inaccessible[i] = InaccessiblePath{Path: redactPath(value.Path, active.result.Roots), Reason: value.Reason}
 	}
 	byKind := map[string]int{}
-	for _, asset := range active.graph.Assets {
+	for _, asset := range active.advice.Graph.Assets {
 		byKind[string(asset.Kind)]++
 	}
 	return ScanReport{
 		ScanID: id, Status: active.status, Roots: roots,
 		EntriesVisited: active.result.EntriesVisited, LogicalBytes: active.result.LogicalBytes,
 		AllocatedBytes: active.result.AllocatedBytes, Inaccessible: inaccessible,
-		AssetCount: len(active.graph.Assets), AssetsByKind: byKind,
-		Portfolio: toProtocolPortfolio(assets.SummarizePortfolio(active.graph)),
+		AssetCount: len(active.advice.Graph.Assets), AssetsByKind: byKind,
+		Portfolio: toProtocolPortfolio(assets.SummarizePortfolio(active.advice.Graph)),
+		Advice:    adviceSummary(active),
 	}
 }
 
 func assetsList(id string, active *activeScan) AssetsListResult {
-	summaries := make([]AssetSummary, 0, len(active.graph.Assets))
-	for _, asset := range active.graph.Assets {
+	summaries := make([]AssetSummary, 0, len(active.advice.Graph.Assets))
+	for _, asset := range active.advice.Graph.Assets {
 		summaries = append(summaries, summarizeAsset(asset, active.result.Roots))
 	}
-	rels := make([]RelationshipSummary, 0, len(active.graph.Relationships))
-	for _, rel := range active.graph.Relationships {
+	rels := make([]RelationshipSummary, 0, len(active.advice.Graph.Relationships))
+	for _, rel := range active.advice.Graph.Relationships {
 		rels = append(rels, RelationshipSummary{
 			ID: rel.ID, SourceID: rel.SourceID, TargetID: rel.TargetID,
 			Kind: rel.Kind, Confidence: rel.Confidence, DetectorID: rel.DetectorID,
@@ -374,7 +475,7 @@ func assetsList(id string, active *activeScan) AssetsListResult {
 }
 
 func portfolioList(id string, active *activeScan) PortfolioListResult {
-	return PortfolioListResult{ScanID: id, Portfolio: toProtocolPortfolio(assets.SummarizePortfolio(active.graph))}
+	return PortfolioListResult{ScanID: id, Portfolio: toProtocolPortfolio(assets.SummarizePortfolio(active.advice.Graph))}
 }
 
 func inventoryChildren(id, pathKey string, active *activeScan) (InventoryChildrenResult, bool) {
@@ -432,12 +533,25 @@ func summarizeAsset(asset assets.Asset, roots []string) AssetSummary {
 			Kind: item.Kind, Value: redactEvidenceValue(item.Value, roots), Confidence: item.Confidence,
 		})
 	}
+	lastActivity := ""
+	if !asset.LastActivityAt.IsZero() {
+		lastActivity = asset.LastActivityAt.UTC().Format(time.RFC3339)
+	}
 	return AssetSummary{
 		ID: asset.ID, Kind: string(asset.Kind), DisplayName: asset.DisplayName,
 		Path: redactPath(asset.Path, roots), Risk: string(asset.Risk),
 		Ecosystem: asset.Ecosystem, Class: string(asset.Class),
 		DetectorID: asset.DetectorID, DetectorVersion: asset.DetectorVersion,
 		Attributes: redactAttributes(asset.Attributes, roots), Evidence: evidence,
+		Size: AssetSize{
+			Attributed:              asset.Size.Attributed,
+			LogicalBytes:            asset.Size.LogicalBytes,
+			AllocatedBytes:          asset.Size.AllocatedBytes,
+			ExclusiveAllocatedBytes: asset.Size.ExclusiveAllocatedBytes,
+			Shared:                  asset.Size.Shared,
+			Uncertain:               asset.Size.Uncertain,
+		},
+		LastActivityAt: lastActivity,
 	}
 }
 
@@ -460,8 +574,14 @@ func toProtocolPortfolio(items []assets.PortfolioSummary) []PortfolioSummary {
 		result = append(result, PortfolioSummary{
 			Ecosystem: item.Ecosystem, ProjectCount: item.ProjectCount,
 			PackageManagers: item.PackageManagers, VersionManagers: item.VersionManagers,
-			SharedStoreCount: item.SharedStoreCount, DownloadCacheCount: item.DownloadCacheCount,
+			ProjectLocalInstallCount: item.ProjectLocalInstallCount,
+			SharedStoreCount:         item.SharedStoreCount, DownloadCacheCount: item.DownloadCacheCount,
 			BuildOutputCount: item.BuildOutputCount, DominantPackageTool: item.DominantPackageTool,
+			ProjectLocalInstallBytes: item.ProjectLocalInstallBytes,
+			SharedStoreBytes:         item.SharedStoreBytes,
+			DownloadCacheBytes:       item.DownloadCacheBytes,
+			BuildOutputBytes:         item.BuildOutputBytes,
+			SizesUncertain:           item.SizesUncertain,
 		})
 	}
 	return result

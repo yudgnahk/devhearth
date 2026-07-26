@@ -38,6 +38,7 @@ struct ScanProgress: Decodable {
     let entriesVisited: Int64
     let allocatedBytes: Int64
     let assetsFound: Int64?
+    let recommendationsFound: Int64?
     let rowsWritten: Int64?
     let rowsTotal: Int64?
     let complete: Bool?
@@ -73,6 +74,17 @@ struct EvidenceSummary: Decodable, Identifiable, Hashable {
     let confidence: Double
 }
 
+/// Attributed storage for one asset. Exclusive bytes already subtract nested
+/// assets, so project and node_modules figures can be shown side by side.
+struct AssetSize: Decodable, Hashable {
+    let attributed: Bool
+    let logicalBytes: Int64
+    let allocatedBytes: Int64
+    let exclusiveAllocatedBytes: Int64
+    let shared: Bool?
+    let uncertain: Bool?
+}
+
 struct AssetSummary: Decodable, Identifiable, Hashable {
     let id: String
     let kind: String
@@ -84,12 +96,14 @@ struct AssetSummary: Decodable, Identifiable, Hashable {
     let detectorId: String
     let detectorVersion: Int
     let evidence: [EvidenceSummary]?
+    let size: AssetSize?
+    let lastActivityAt: String?
 
     // Wire field is "class"; Swift reserves that keyword.
     enum CodingKeys: String, CodingKey {
         case id, kind, displayName, path, risk, ecosystem
         case classification = "class"
-        case detectorId, detectorVersion, evidence
+        case detectorId, detectorVersion, evidence, size, lastActivityAt
     }
 }
 
@@ -114,10 +128,154 @@ struct PortfolioSummary: Codable, Identifiable, Hashable {
     let projectCount: Int
     let packageManagers: [String: Int]?
     let versionManagers: [String]?
+    let projectLocalInstallCount: Int?
     let sharedStoreCount: Int?
     let downloadCacheCount: Int?
     let buildOutputCount: Int?
     let dominantPackageTool: String?
+    let projectLocalInstallBytes: Int64?
+    let sharedStoreBytes: Int64?
+    let downloadCacheBytes: Int64?
+    let buildOutputBytes: Int64?
+    let sizesUncertain: Bool?
+}
+
+// MARK: - Phase 3 advice
+
+struct FitListParams: Encodable { let scanId: String }
+
+struct RecommendationsListParams: Encodable { let scanId: String }
+
+/// One weighted signal behind a fit option, with the detail string the engine
+/// produced so the UI never re-derives an explanation.
+struct FitFactor: Decodable, Identifiable, Hashable {
+    var id: String { kind }
+    let kind: String
+    let score: Double
+    let weight: Double
+    let detail: String
+}
+
+struct FitOption: Decodable, Identifiable, Hashable {
+    var id: String { tool }
+    let tool: String
+    let stayPut: Bool
+    let installed: Bool
+    let projectsUsing: Int
+    let rank: Int
+    let score: Double
+    let confidence: Double
+    let factors: [FitFactor]?
+    let dominantFactors: [String]?
+    let blockers: [String]?
+    let workflowImpact: String?
+    let immediateSavingsLowBytes: Int64
+    let immediateSavingsHighBytes: Int64
+    let futureGrowthReductionBytes: Int64?
+    let savingsUncertain: Bool?
+}
+
+struct FitAssessment: Decodable, Identifiable, Hashable {
+    var id: String { ecosystem }
+    let ecosystem: String
+    let depth: String
+    let projectCount: Int
+    let baseline: String?
+    let recommendedTool: String?
+    let stayPutWins: Bool
+    let options: [FitOption]?
+    let notes: [String]?
+    let projectLocalInstallBytes: Int64?
+    let sharedStoreBytes: Int64?
+    let versionManagers: [String]?
+
+    var isDeep: Bool { depth == "deep" }
+}
+
+struct FitListResult: Decodable {
+    let scanId: String
+    let fit: [FitAssessment]
+}
+
+struct RecommendationSavings: Decodable, Hashable {
+    let lowBytes: Int64
+    let highBytes: Int64
+    let futureGrowthReductionBytes: Int64?
+    let uncertain: Bool?
+}
+
+struct RecommendationAlternative: Decodable, Identifiable, Hashable {
+    var id: String { label }
+    let label: String
+    let stayPut: Bool?
+    let rank: Int
+    let score: Double
+    let savingsLowBytes: Int64?
+    let savingsHighBytes: Int64?
+    let blockers: [String]?
+}
+
+struct AffectedAsset: Decodable, Identifiable, Hashable {
+    let id: String
+    let kind: String
+    let displayName: String
+    let path: String
+}
+
+struct RecommendationSummary: Decodable, Identifiable, Hashable {
+    let id: String
+    let family: String
+    let title: String
+    let ecosystem: String?
+    let explanation: String
+    let risk: String
+    let confidence: Double
+    let priority: Double
+    let savings: RecommendationSavings
+    let restorationCost: String?
+    let compatibilityImpact: String?
+    let preconditions: [String]?
+    let proposedActions: [String]?
+    let verification: [String]?
+    let rollback: String?
+    let blockers: [String]?
+    let affectedAssets: [AffectedAsset]?
+    let evidence: [EvidenceSummary]?
+    let alternatives: [RecommendationAlternative]?
+    let dominantFactors: [String]?
+    let ruleId: String
+    let ruleVersion: Int
+    /// The engine restates that this protocol version cannot execute advice.
+    let adviceOnly: Bool?
+
+    var isBlocked: Bool { !(blockers ?? []).isEmpty }
+}
+
+struct RecommendationsListResult: Decodable {
+    let scanId: String
+    let recommendations: [RecommendationSummary]
+}
+
+/// Report-level roll-up of advice. Savings bounds stay separate on purpose.
+struct AdviceSummary: Codable, Hashable {
+    let recommendationCount: Int
+    let byFamily: [String: Int]?
+    let byRisk: [String: Int]?
+    let blockedCount: Int
+    let savingsLowBytes: Int64
+    let savingsHighBytes: Int64
+    let savingsUncertain: Bool?
+    let fit: [FitHeadline]?
+    let topRecommendationTitle: String?
+}
+
+struct FitHeadline: Codable, Hashable {
+    let ecosystem: String
+    let depth: String
+    let baseline: String?
+    let recommendedTool: String?
+    let stayPutWins: Bool
+    let confidence: Double?
 }
 
 struct PortfolioListResult: Decodable {
@@ -165,6 +323,7 @@ struct ScanReport: Codable {
     let assetCount: Int?
     let assetsByKind: [String: Int]?
     let portfolio: [PortfolioSummary]?
+    let advice: AdviceSummary?
 }
 
 struct RPCError: Decodable, LocalizedError {

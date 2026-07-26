@@ -70,6 +70,14 @@ For portfolio-fit recommendations, also record:
 
 AI-generated prose is visually distinguishable from deterministic evidence.
 
+Implementation note (Phase 3): rules carry their own identifier and version on
+every recommendation, evidence values and affected-asset paths are redacted
+against the selected roots before leaving the engine, and a recommendation's
+identifier is a hash of its family plus scope keys so it stays stable across
+rescans without embedding a path. A rule that cannot verify a precondition
+records a blocker and keeps its confidence low rather than presenting the
+recommendation as ready to execute.
+
 ## Portfolio fit and tool preference safety
 
 Fit scoring and preferred-tool policy guide structure; they do not authorize mutation and cannot weaken risk.

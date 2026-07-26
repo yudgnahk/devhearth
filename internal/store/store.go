@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/scan"
 	_ "modernc.org/sqlite"
@@ -203,13 +204,15 @@ func (b bulkTree) contains(path string) bool {
 	}
 }
 
-// Save persists inventory metadata and an optional asset graph for one scan.
-func (s *Store) Save(ctx context.Context, result scan.Result, graph assets.Graph, status string) (string, error) {
-	return s.SaveWithOptions(ctx, result, graph, status, SaveOptions{})
+// Save persists inventory metadata plus the analysed asset graph, fit
+// assessments, and recommendations for one scan.
+func (s *Store) Save(ctx context.Context, result scan.Result, advice advisor.Result, status string) (string, error) {
+	return s.SaveWithOptions(ctx, result, advice, status, SaveOptions{})
 }
 
 // SaveWithOptions is Save with bulk-load options (progress, reused directory index).
-func (s *Store) SaveWithOptions(ctx context.Context, result scan.Result, graph assets.Graph, status string, options SaveOptions) (_ string, err error) {
+func (s *Store) SaveWithOptions(ctx context.Context, result scan.Result, advice advisor.Result, status string, options SaveOptions) (_ string, err error) {
+	graph := advice.Graph
 	if status == "" {
 		status = "complete"
 	}
@@ -317,6 +320,9 @@ func (s *Store) SaveWithOptions(ctx context.Context, result scan.Result, graph a
 	if err := insertGraph(ctx, tx, scanID, graph, pathToEntryID); err != nil {
 		return "", err
 	}
+	if err := insertAdvice(ctx, tx, scanID, advice); err != nil {
+		return "", err
+	}
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
@@ -419,9 +425,9 @@ func flattenDirectoryIndex(index map[string][]scan.DirectoryNode) []scan.Directo
 }
 
 func insertDirectoryAggregates(ctx context.Context, tx *sql.Tx, scanID string, aggregates []scan.DirectoryNode, report func(n int)) error {
-	const columns = 11
-	const rowSQL = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-	prefix := `INSERT INTO directory_aggregates(scan_id, path, parent_path, name, kind, logical_bytes, allocated_bytes, total_logical_bytes, total_allocated_bytes, direct_child_count, is_symlink) VALUES `
+	const columns = 13
+	const rowSQL = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+	prefix := `INSERT INTO directory_aggregates(scan_id, path, parent_path, name, kind, logical_bytes, allocated_bytes, total_logical_bytes, total_allocated_bytes, direct_child_count, is_symlink, modified_at, hard_link_alias_count) VALUES `
 
 	for start := 0; start < len(aggregates); start += insertBatchSize {
 		end := start + insertBatchSize
@@ -444,7 +450,7 @@ func insertDirectoryAggregates(ctx context.Context, tx *sql.Tx, scanID string, a
 			args = append(args,
 				scanID, node.Path, node.ParentPath, node.Name, node.Kind,
 				node.LogicalBytes, node.AllocatedBytes, node.TotalLogicalBytes, node.TotalAllocatedBytes,
-				node.DirectChildCount, isSymlink,
+				node.DirectChildCount, isSymlink, nullableTime(node.ModifiedAt), node.HardLinkAliasCount,
 			)
 		}
 		if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {
@@ -478,7 +484,7 @@ func (s *Store) ListDirectoryChildren(ctx context.Context, scanID, parentPath st
 }
 
 func insertGraph(ctx context.Context, tx *sql.Tx, scanID string, graph assets.Graph, pathToEntryID map[string]int64) error {
-	assetStmt, err := tx.PrepareContext(ctx, `INSERT INTO assets(id, scan_id, kind, display_name, risk, detector_id, detector_version, ecosystem, class, primary_path, attributes_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	assetStmt, err := tx.PrepareContext(ctx, `INSERT INTO assets(id, scan_id, kind, display_name, risk, detector_id, detector_version, ecosystem, class, primary_path, attributes_json, logical_bytes, allocated_bytes, exclusive_allocated_bytes, size_attributed, size_shared, size_uncertain, last_activity_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -502,7 +508,13 @@ func insertGraph(ctx context.Context, tx *sql.Tx, scanID string, graph assets.Gr
 		if string(attrs) == "null" {
 			attrs = []byte("{}")
 		}
-		if _, err := assetStmt.ExecContext(ctx, asset.ID, scanID, string(asset.Kind), asset.DisplayName, string(asset.Risk), asset.DetectorID, asset.DetectorVersion, asset.Ecosystem, string(asset.Class), asset.Path, string(attrs)); err != nil {
+		if _, err := assetStmt.ExecContext(ctx,
+			asset.ID, scanID, string(asset.Kind), asset.DisplayName, string(asset.Risk),
+			asset.DetectorID, asset.DetectorVersion, asset.Ecosystem, string(asset.Class), asset.Path, string(attrs),
+			asset.Size.LogicalBytes, asset.Size.AllocatedBytes, asset.Size.ExclusiveAllocatedBytes,
+			boolToInt(asset.Size.Attributed), boolToInt(asset.Size.Shared), boolToInt(asset.Size.Uncertain),
+			nullableTime(asset.LastActivityAt),
+		); err != nil {
 			return err
 		}
 		if entryID, ok := pathToEntryID[asset.Path]; ok {
@@ -545,7 +557,7 @@ func insertGraph(ctx context.Context, tx *sql.Tx, scanID string, graph assets.Gr
 // ListAssets returns assets for a scan ID, newest-matching scan only when
 // looking up by protocol scan handles that map to engine-assigned IDs.
 func (s *Store) ListAssets(ctx context.Context, scanID string) ([]assets.Asset, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, display_name, risk, detector_id, detector_version, ecosystem, class, primary_path, attributes_json FROM assets WHERE scan_id = ? ORDER BY kind, display_name, primary_path`, scanID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, display_name, risk, detector_id, detector_version, ecosystem, class, primary_path, attributes_json, logical_bytes, allocated_bytes, exclusive_allocated_bytes, size_attributed, size_shared, size_uncertain, last_activity_at FROM assets WHERE scan_id = ? ORDER BY kind, display_name, primary_path`, scanID)
 	if err != nil {
 		return nil, err
 	}
@@ -554,12 +566,25 @@ func (s *Store) ListAssets(ctx context.Context, scanID string) ([]assets.Asset, 
 	for rows.Next() {
 		var asset assets.Asset
 		var kind, risk, class, attrs string
-		if err := rows.Scan(&asset.ID, &kind, &asset.DisplayName, &risk, &asset.DetectorID, &asset.DetectorVersion, &asset.Ecosystem, &class, &asset.Path, &attrs); err != nil {
+		var attributed, shared, uncertain int
+		var lastActivity sql.NullString
+		if err := rows.Scan(&asset.ID, &kind, &asset.DisplayName, &risk, &asset.DetectorID, &asset.DetectorVersion,
+			&asset.Ecosystem, &class, &asset.Path, &attrs,
+			&asset.Size.LogicalBytes, &asset.Size.AllocatedBytes, &asset.Size.ExclusiveAllocatedBytes,
+			&attributed, &shared, &uncertain, &lastActivity); err != nil {
 			return nil, err
 		}
 		asset.Kind = assets.Kind(kind)
 		asset.Risk = assets.Risk(risk)
 		asset.Class = assets.Class(class)
+		asset.Size.Attributed = attributed == 1
+		asset.Size.Shared = shared == 1
+		asset.Size.Uncertain = uncertain == 1
+		if lastActivity.Valid && lastActivity.String != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339Nano, lastActivity.String); parseErr == nil {
+				asset.LastActivityAt = parsed
+			}
+		}
 		if attrs != "" && attrs != "{}" {
 			_ = json.Unmarshal([]byte(attrs), &asset.Attributes)
 		}

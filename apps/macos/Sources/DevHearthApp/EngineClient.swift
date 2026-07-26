@@ -42,6 +42,8 @@ final class EngineClient {
     private(set) var assets: [AssetSummary] = []
     private(set) var relationships: [RelationshipSummary] = []
     private(set) var portfolio: [PortfolioSummary] = []
+    private(set) var recommendations: [RecommendationSummary] = []
+    private(set) var fit: [FitAssessment] = []
     private(set) var directoryChildren: [DirectoryChild] = []
     private(set) var directoryPath = "" // redacted display path of current folder
     private(set) var directoryPathKey = "" // absolute key for inventory.children
@@ -104,6 +106,8 @@ final class EngineClient {
             assets = []
             relationships = []
             portfolio = []
+            recommendations = []
+            fit = []
             directoryChildren = []
             directoryPath = ""
             directoryPathKey = ""
@@ -140,6 +144,18 @@ final class EngineClient {
             )
             portfolio = portfolioResult.portfolio
 
+            let fitResult: FitListResult = try await request(
+                method: "fit.list",
+                params: FitListParams(scanId: scanID)
+            )
+            fit = fitResult.fit
+
+            let adviceResult: RecommendationsListResult = try await request(
+                method: "recommendations.list",
+                params: RecommendationsListParams(scanId: scanID)
+            )
+            recommendations = adviceResult.recommendations
+
             let report: ScanReport = try await request(
                 method: "report.export",
                 params: ReportExportParams(scanId: scanID)
@@ -148,7 +164,7 @@ final class EngineClient {
 
             try await loadChildren(pathKey: "")
             hasCompletedScan = true
-            status = "Scan complete · \(assets.count) assets"
+            status = "Scan complete · \(assets.count) assets · \(recommendations.count) recommendations"
         } catch {
             errorMessage = error.localizedDescription
             status = statusForFailure(error, duringScan: true)
@@ -385,6 +401,8 @@ final class EngineClient {
                     }
                 } else if event.params.phase == "detection", let found = event.params.assetsFound {
                     status = "Detecting assets… \(found) found"
+                } else if event.params.phase == "advice" {
+                    status = "Analyzing portfolio fit and recommendations…"
                 } else if event.params.phase == "persist" {
                     if let written = event.params.rowsWritten, let total = event.params.rowsTotal, total > 0 {
                         status = "Saving inventory… \(written)/\(total)"

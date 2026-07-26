@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/scan"
 )
@@ -36,7 +37,7 @@ func TestSavePersistsInventoryAndAssets(t *testing.T) {
 		Relationships: nil,
 	}
 	var lastWritten, lastTotal int64
-	id, err := database.SaveWithOptions(context.Background(), result, graph, "complete", SaveOptions{
+	id, err := database.SaveWithOptions(context.Background(), result, advisor.Result{Graph: graph}, "complete", SaveOptions{
 		Progress: func(written, total int64) {
 			lastWritten, lastTotal = written, total
 		},
@@ -121,7 +122,7 @@ func TestSaveSkipsBulkTreeInteriors(t *testing.T) {
 			{Path: "/proj/src/main.go", ParentPath: "/proj/src", Kind: "file", LogicalBytes: 20, AllocatedBytes: 4096, DeviceID: 1, Inode: 6, LinkCount: 1, ModifiedAt: now},
 		},
 	}
-	id, err := database.Save(context.Background(), result, assets.Graph{}, "complete")
+	id, err := database.Save(context.Background(), result, advisor.Result{}, "complete")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +229,7 @@ func TestSavePrunesGeneratedOutputOnlyWithSiblingEvidence(t *testing.T) {
 				Roots: []string{test.entries[0].Path}, StartedAt: now, CompletedAt: now,
 				Entries: test.entries,
 			}
-			id, err := database.Save(context.Background(), result, assets.Graph{}, "complete")
+			id, err := database.Save(context.Background(), result, advisor.Result{}, "complete")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -279,7 +280,7 @@ func TestSaveKeepsDurableConnectionSettings(t *testing.T) {
 			{Path: "/fixtures", Kind: "directory", DeviceID: 1, Inode: 1, LinkCount: 1, ModifiedAt: now},
 		},
 	}
-	if _, err := database.Save(context.Background(), result, assets.Graph{}, "complete"); err != nil {
+	if _, err := database.Save(context.Background(), result, advisor.Result{}, "complete"); err != nil {
 		t.Fatal(err)
 	}
 
