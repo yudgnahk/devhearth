@@ -42,15 +42,17 @@ func (r *sharedStoreRule) Evaluate(input Input) []Recommendation {
 
 func (r *sharedStoreRule) recommend(assessment portfolio.Assessment, option portfolio.Option, installs []assets.Asset) Recommendation {
 	confidence := option.Confidence
+	uncertain := false
 	evidence := make([][]assets.Evidence, 0, len(installs))
 	for _, install := range installs {
 		evidence = append(evidence, install.Evidence)
-		if install.Size.Uncertain {
-			// Hard links inside a measured install make the current footprint a
-			// lower bound, so the modelled saving deserves less confidence.
-			confidence -= 0.05
-			break
-		}
+		uncertain = uncertain || install.Size.Uncertain
+	}
+	if uncertain {
+		// Hard links inside a measured install make the current footprint a lower
+		// bound, so the modelled saving deserves less confidence. The penalty
+		// applies once no matter how many installs are affected.
+		confidence -= 0.05
 	}
 
 	return Recommendation{

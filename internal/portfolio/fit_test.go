@@ -1,6 +1,7 @@
 package portfolio
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -141,7 +142,7 @@ func TestAssessRecordsPnPBlockerForNonYarnOptions(t *testing.T) {
 
 	var found bool
 	for _, blocker := range pnpm.Blockers {
-		if blocker != "" && containsFold(blocker, "Plug'n'Play") {
+		if blocker != "" && strings.Contains(blocker, "Plug'n'Play") {
 			found = true
 		}
 	}
@@ -208,17 +209,4 @@ func TestAssessTreatsDormantProjectsAsFavouringStayPut(t *testing.T) {
 	if findOption(t, coldNode, "npm").Score <= findOption(t, hotNode, "npm").Score {
 		t.Fatal("dormant portfolios should favour the stay-put option more than active ones")
 	}
-}
-
-func containsFold(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && (haystack == needle || indexFold(haystack, needle) >= 0)
-}
-
-func indexFold(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
 }

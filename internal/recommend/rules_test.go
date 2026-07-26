@@ -357,3 +357,44 @@ func TestRulesNeverProposeExecutableMutations(t *testing.T) {
 		}
 	}
 }
+
+func TestSharedStoreRuleKeepsEvidenceFromEveryInstall(t *testing.T) {
+	// An uncertain install early in the list must not stop later installs from
+	// contributing evidence, and the confidence penalty applies only once.
+	uncertain := install("node_modules", "node", "/roots/a/node_modules", 3<<30)
+	uncertain.Size.Uncertain = true
+	alsoUncertain := install("node_modules", "node", "/roots/b/node_modules", 3<<30)
+	alsoUncertain.Size.Uncertain = true
+	certain := install("node_modules", "node", "/roots/c/node_modules", 3<<30)
+	certain.Evidence = []assets.Evidence{{Kind: "path_signature", Value: "/roots/c/node_modules", Confidence: 0.95}}
+
+	graph := assets.Graph{Assets: []assets.Asset{uncertain, alsoUncertain, certain}}
+	assessment := portfolio.Assessment{
+		Ecosystem: "node", Depth: portfolio.DepthDeep, ProjectLocalInstallBytes: 9 << 30,
+		Options: []portfolio.Option{{
+			Tool: "pnpm", Rank: 1, Confidence: 0.7, Installed: true,
+			ImmediateSavingsLowBytes: 1 << 30, ImmediateSavingsHighBytes: 4 << 30,
+		}},
+	}
+
+	got := (&sharedStoreRule{}).Evaluate(Input{Graph: graph, Assessments: []portfolio.Assessment{assessment}, Now: testNow})
+	if len(got) != 1 {
+		t.Fatalf("want one recommendation, got %d", len(got))
+	}
+	if len(got[0].AffectedAssetIDs) != 3 {
+		t.Fatalf("every install must be named: %#v", got[0].AffectedAssetIDs)
+	}
+	var sawLast bool
+	for _, evidence := range got[0].Evidence {
+		if evidence.Value == "/roots/c/node_modules" {
+			sawLast = true
+		}
+	}
+	if !sawLast {
+		t.Fatalf("evidence after the first uncertain install was dropped: %#v", got[0].Evidence)
+	}
+	// 0.7 base minus a single 0.05 uncertainty penalty, not one per install.
+	if got[0].Confidence != 0.65 {
+		t.Fatalf("confidence = %v, want 0.65 (one penalty only)", got[0].Confidence)
+	}
+}

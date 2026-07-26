@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,5 +255,42 @@ func TestSavePersistsRollupModificationTimeAndAliasCounts(t *testing.T) {
 	}
 	if modifiedAt == "" {
 		t.Fatal("rollup modification time was not persisted")
+	}
+}
+
+func TestRecommendationAssetEdgesAreScanScoped(t *testing.T) {
+	// The schema must reject an edge pairing one scan's recommendation with
+	// another scan's asset, not merely check that the asset exists somewhere.
+	database := openStore(t)
+	now := time.Now().UTC()
+	first, advice := adviceFixture(now)
+	firstScan, err := database.Save(context.Background(), first, advice, "complete")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A real scan mints fresh asset UUIDs, so the second scan's ids must differ.
+	second, otherAdvice := adviceFixture(now)
+	for index := range otherAdvice.Graph.Assets {
+		otherAdvice.Graph.Assets[index].ID += "-other"
+	}
+	otherAdvice.Recommendations[0].ID = "rec_other00000"
+	otherAdvice.Recommendations[0].AffectedAssetIDs = []string{"asset-install-other"}
+	secondScan, err := database.Save(context.Background(), second, otherAdvice, "complete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstScan == secondScan {
+		t.Fatal("expected two distinct scans")
+	}
+
+	_, err = database.db.ExecContext(context.Background(),
+		`INSERT INTO recommendation_assets(scan_id, recommendation_id, asset_id) VALUES (?, ?, ?)`,
+		firstScan, "rec_abcdef123456", "asset-install-other")
+	if err == nil {
+		t.Fatal("a cross-scan asset edge must be rejected by the schema")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+		t.Fatalf("expected a foreign key violation, got %v", err)
 	}
 }

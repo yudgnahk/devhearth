@@ -316,3 +316,113 @@ func TestRunScanFailsWhenAnalysisFails(t *testing.T) {
 
 // errAnalysis stands in for any analysis failure.
 var errAnalysis = errors.New("analysis failed")
+
+func TestWithCompletedScanMapsStatusAndProjectionErrors(t *testing.T) {
+	// Every completed-scan handler shares this helper, so its status gate and
+	// error mapping are tested once here rather than per method.
+	server := NewServer(ServerOptions{})
+	server.scans["done"] = adviceScan()
+	server.scans["busy"] = &activeScan{status: "running"}
+	server.scans["stopping"] = &activeScan{status: "cancelling"}
+
+	cases := []struct {
+		name      string
+		scanID    string
+		project   func(*activeScan) (any, *Error)
+		wantInOut string
+	}{
+		{
+			name:   "completed scan projects a result",
+			scanID: "done",
+			project: func(*activeScan) (any, *Error) {
+				return ScanStatus{ScanID: "done", Status: "complete"}, nil
+			},
+			wantInOut: `"status":"complete"`,
+		},
+		{
+			name:      "unknown scan is unavailable",
+			scanID:    "missing",
+			project:   func(*activeScan) (any, *Error) { return ScanStatus{}, nil },
+			wantInOut: `"code":-32004`,
+		},
+		{
+			name:      "running scan is unavailable",
+			scanID:    "busy",
+			project:   func(*activeScan) (any, *Error) { return ScanStatus{}, nil },
+			wantInOut: `"code":-32004`,
+		},
+		{
+			name:      "cancelling scan is unavailable",
+			scanID:    "stopping",
+			project:   func(*activeScan) (any, *Error) { return ScanStatus{}, nil },
+			wantInOut: `"code":-32004`,
+		},
+		{
+			name:   "projection error reaches the client with its own code",
+			scanID: "done",
+			project: func(*activeScan) (any, *Error) {
+				return nil, &Error{Code: -32005, Message: "asset not found"}
+			},
+			wantInOut: `"code":-32005`,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var output bytes.Buffer
+			encoder := json.NewEncoder(&output)
+			err := server.withCompletedScan(encoder, json.RawMessage(`"1"`), testCase.scanID, "not available", testCase.project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), testCase.wantInOut) {
+				t.Fatalf("output %s does not contain %s", output.String(), testCase.wantInOut)
+			}
+		})
+	}
+}
+
+func TestAssetsGetReportsMissingAssetThroughTheSharedHelper(t *testing.T) {
+	server := NewServer(ServerOptions{})
+	server.scans["done"] = adviceScan()
+
+	var output bytes.Buffer
+	request := `{"jsonrpc":"2.0","id":"1","method":"assets.get","params":{"scanId":"done","assetId":"nope"}}` + "\n"
+	if err := server.Serve(context.Background(), strings.NewReader(request), &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"code":-32005`) {
+		t.Fatalf("expected asset-not-found error, got %s", output.String())
+	}
+
+	output.Reset()
+	found := `{"jsonrpc":"2.0","id":"2","method":"assets.get","params":{"scanId":"done","assetId":"install-1"}}` + "\n"
+	if err := server.Serve(context.Background(), strings.NewReader(found), &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"displayName":"node_modules"`) {
+		t.Fatalf("expected the asset summary, got %s", output.String())
+	}
+	if strings.Contains(output.String(), "/Users/") {
+		t.Fatalf("absolute path leaked: %s", output.String())
+	}
+}
+
+func TestFindRecommendationResolvesOnlyItsOwnAssets(t *testing.T) {
+	active := adviceScan()
+	// A second asset the recommendation does not name must not be resolved.
+	active.advice.Graph.Assets = append(active.advice.Graph.Assets, assets.Asset{
+		ID: "unrelated", Kind: assets.KindProject, DisplayName: "other",
+		Path: testRoot + "/other", Risk: assets.RiskInformational,
+	})
+
+	summary, found := findRecommendation(active, "rec_000000000001")
+	if !found {
+		t.Fatal("recommendation should be found by id")
+	}
+	if len(summary.AffectedAssets) != 1 || summary.AffectedAssets[0].ID != "install-1" {
+		t.Fatalf("only named assets belong in the summary: %#v", summary.AffectedAssets)
+	}
+	if _, found := findRecommendation(active, "rec_missing"); found {
+		t.Fatal("an unknown id must not match")
+	}
+}

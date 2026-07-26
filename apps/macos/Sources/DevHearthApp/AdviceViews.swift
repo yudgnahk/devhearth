@@ -4,7 +4,9 @@ import SwiftUI
 /// Nothing here can execute an operation; the engine only proposes plans.
 struct AdviceView: View {
     let engine: EngineClient
-    @State private var selected: RecommendationSummary?
+    /// Selection is held as an id so the List highlight and the detail pane are
+    /// driven by one value; holding the struct instead lets them disagree.
+    @State private var selectedID: String?
 
     var body: some View {
         Group {
@@ -27,40 +29,40 @@ struct AdviceView: View {
                     detail
                         .frame(minWidth: 360)
                 }
+                // Open on the highest-priority item, and recover if a new scan
+                // retires the previously selected recommendation.
+                .onAppear { selectFirstIfNeeded() }
+                .onChange(of: engine.recommendations) { selectFirstIfNeeded() }
             }
         }
     }
 
     private var inbox: some View {
-        List(engine.recommendations, selection: $selected) { item in
-            Button {
-                selected = item
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title).font(.headline)
-                    HStack(spacing: 6) {
-                        RiskBadge(risk: item.risk)
-                        Text(savingsLabel(item.savings))
-                            .font(.caption)
-                            .monospacedDigit()
-                        if item.isBlocked {
-                            Label("blocked", systemImage: "exclamationmark.triangle")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
+        List(engine.recommendations, selection: $selectedID) { item in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title).font(.headline)
+                HStack(spacing: 6) {
+                    RiskBadge(risk: item.risk)
+                    Text(savingsLabel(item.savings))
+                        .font(.caption)
+                        .monospacedDigit()
+                    if item.isBlocked {
+                        Label("blocked", systemImage: "exclamationmark.triangle")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
                     }
-                    Text("\(familyLabel(item.family)) · confidence \(percent(item.confidence))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 2)
+                Text("\(familyLabel(item.family)) · confidence \(percent(item.confidence))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            .padding(.vertical, 2)
+            .tag(item.id)
         }
     }
 
     @ViewBuilder private var detail: some View {
-        if let item = selected ?? engine.recommendations.first {
+        if let item = engine.recommendations.first(where: { $0.id == selectedID }) {
             RecommendationDetailView(recommendation: item)
         } else {
             ContentUnavailableView(
@@ -69,6 +71,14 @@ struct AdviceView: View {
                 description: Text("Pick an item to see its evidence, blockers, and rollback plan.")
             )
         }
+    }
+
+    /// Selects the top-ranked recommendation unless a still-present one is chosen.
+    private func selectFirstIfNeeded() {
+        if let selectedID, engine.recommendations.contains(where: { $0.id == selectedID }) {
+            return
+        }
+        selectedID = engine.recommendations.first?.id
     }
 }
 

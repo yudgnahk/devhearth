@@ -182,80 +182,58 @@ func (s *Server) handle(ctx context.Context, encoder *json.Encoder, request Requ
 		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" {
 			return s.write(encoder, failure(request.ID, -32602, "scanId is required"))
 		}
-		s.scansMu.Lock()
-		current, found := s.scans[params.ScanID]
-		if !found || current.status == "running" || current.status == "cancelling" {
-			s.scansMu.Unlock()
-			return s.write(encoder, failure(request.ID, -32004, "completed scan report is not available"))
-		}
-		result := report(params.ScanID, current)
-		s.scansMu.Unlock()
-		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: result})
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan report is not available",
+			func(current *activeScan) (any, *Error) {
+				return report(params.ScanID, current), nil
+			})
 	case "assets.list":
 		var params AssetsListParams
 		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" {
 			return s.write(encoder, failure(request.ID, -32602, "scanId is required"))
 		}
-		s.scansMu.Lock()
-		current, found := s.scans[params.ScanID]
-		if !found || current.status == "running" || current.status == "cancelling" {
-			s.scansMu.Unlock()
-			return s.write(encoder, failure(request.ID, -32004, "completed scan assets are not available"))
-		}
-		result := assetsList(params.ScanID, current)
-		s.scansMu.Unlock()
-		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: result})
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan assets are not available",
+			func(current *activeScan) (any, *Error) {
+				return assetsList(params.ScanID, current), nil
+			})
 	case "assets.get":
 		var params AssetsGetParams
 		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" || params.AssetID == "" {
 			return s.write(encoder, failure(request.ID, -32602, "scanId and assetId are required"))
 		}
-		s.scansMu.Lock()
-		current, found := s.scans[params.ScanID]
-		if !found || current.status == "running" || current.status == "cancelling" {
-			s.scansMu.Unlock()
-			return s.write(encoder, failure(request.ID, -32004, "completed scan assets are not available"))
-		}
-		for _, asset := range current.advice.Graph.Assets {
-			if asset.ID == params.AssetID {
-				summary := summarizeAsset(asset, current.result.Roots)
-				s.scansMu.Unlock()
-				return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: AssetsGetResult{ScanID: params.ScanID, Asset: summary}})
-			}
-		}
-		s.scansMu.Unlock()
-		return s.write(encoder, failure(request.ID, -32005, "asset not found"))
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan assets are not available",
+			func(current *activeScan) (any, *Error) {
+				for _, asset := range current.advice.Graph.Assets {
+					if asset.ID == params.AssetID {
+						return AssetsGetResult{
+							ScanID: params.ScanID,
+							Asset:  summarizeAsset(asset, current.result.Roots),
+						}, nil
+					}
+				}
+				return nil, &Error{Code: -32005, Message: "asset not found"}
+			})
 	case "portfolio.list":
 		var params PortfolioListParams
 		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" {
 			return s.write(encoder, failure(request.ID, -32602, "scanId is required"))
 		}
-		s.scansMu.Lock()
-		current, found := s.scans[params.ScanID]
-		if !found || current.status == "running" || current.status == "cancelling" {
-			s.scansMu.Unlock()
-			return s.write(encoder, failure(request.ID, -32004, "completed scan portfolio is not available"))
-		}
-		portfolio := portfolioList(params.ScanID, current)
-		s.scansMu.Unlock()
-		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: portfolio})
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan portfolio is not available",
+			func(current *activeScan) (any, *Error) {
+				return portfolioList(params.ScanID, current), nil
+			})
 	case "inventory.children":
 		var params InventoryChildrenParams
 		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" {
 			return s.write(encoder, failure(request.ID, -32602, "scanId is required"))
 		}
-		s.scansMu.Lock()
-		current, found := s.scans[params.ScanID]
-		if !found || current.status == "running" || current.status == "cancelling" {
-			s.scansMu.Unlock()
-			return s.write(encoder, failure(request.ID, -32004, "completed scan inventory is not available"))
-		}
-		result, ok := inventoryChildren(params.ScanID, params.PathKey, current)
-		s.scansMu.Unlock()
-		if !ok {
-			return s.write(encoder, failure(request.ID, -32006, "inventory path not found in scan"))
-		}
-		return s.write(encoder, Response{JSONRPC: JSONRPCVersion, ID: request.ID, Result: result})
+		return s.withCompletedScan(encoder, request.ID, params.ScanID, "completed scan inventory is not available",
+			func(current *activeScan) (any, *Error) {
+				result, ok := inventoryChildren(params.ScanID, params.PathKey, current)
+				if !ok {
+					return nil, &Error{Code: -32006, Message: "inventory path not found in scan"}
+				}
+				return result, nil
+			})
 	case "fit.list":
 		var params FitListParams
 		if err := decodeParams(request.Params, &params); err != nil || params.ScanID == "" {

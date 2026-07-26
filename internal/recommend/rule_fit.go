@@ -62,7 +62,7 @@ func (r *portfolioFitRule) standardize(assessment portfolio.Assessment, top port
 		Preconditions: []string{
 			"the ranked blockers are resolved or accepted",
 			"one project is migrated and verified before the rest follow",
-			"CI and any private registry configuration are updated with the project",
+			"CI pipelines and any private registry configuration are updated alongside each migrated project",
 		},
 		ProposedActions: []string{
 			fmt.Sprintf("migrate one representative project to %s and keep the previous lockfile until it is verified", top.Tool),

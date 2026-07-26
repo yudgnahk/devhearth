@@ -79,13 +79,20 @@ CREATE TABLE recommendations (
     PRIMARY KEY (scan_id, id)
 );
 
--- recommendation_affects_asset edges (SPECS §7.8 affected assets).
+-- Scan-scoped key on assets so edges can require that a referenced asset comes
+-- from the same scan as the row pointing at it, not merely that it exists.
+CREATE UNIQUE INDEX assets_scan_asset ON assets(scan_id, id);
+
+-- recommendation_affects_asset edges (SPECS §7.8 affected assets). Both foreign
+-- keys are scan-scoped: an edge may not pair one scan's recommendation with
+-- another scan's asset.
 CREATE TABLE recommendation_assets (
     scan_id TEXT NOT NULL,
     recommendation_id TEXT NOT NULL,
-    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL,
     PRIMARY KEY (scan_id, recommendation_id, asset_id),
-    FOREIGN KEY (scan_id, recommendation_id) REFERENCES recommendations(scan_id, id) ON DELETE CASCADE
+    FOREIGN KEY (scan_id, recommendation_id) REFERENCES recommendations(scan_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (scan_id, asset_id) REFERENCES assets(scan_id, id) ON DELETE CASCADE
 );
 
 CREATE TABLE recommendation_evidence (

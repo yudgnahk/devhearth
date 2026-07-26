@@ -137,3 +137,50 @@ import Testing
     #expect(savingsLabel(range).contains("–"))
     #expect(savingsLabel(none) == "No immediate savings")
 }
+
+@Test func sizeLineLabelsNestedSharedAndUncertainTotals() {
+    let plain = AssetSize(attributed: true, logicalBytes: 10, allocatedBytes: 4096,
+                          exclusiveAllocatedBytes: 4096, shared: nil, uncertain: nil)
+    #expect(!sizeLine(plain).contains("excluding nested assets"))
+    #expect(!sizeLine(plain).contains("lower bound"))
+
+    let nested = AssetSize(attributed: true, logicalBytes: 10, allocatedBytes: 8192,
+                           exclusiveAllocatedBytes: 4096, shared: nil, uncertain: nil)
+    #expect(sizeLine(nested).contains("excluding nested assets"))
+
+    let store = AssetSize(attributed: true, logicalBytes: 10, allocatedBytes: 4096,
+                          exclusiveAllocatedBytes: 4096, shared: true, uncertain: true)
+    let line = sizeLine(store)
+    #expect(line.contains("shared store"))
+    #expect(line.contains("lower bound"))
+}
+
+@Test func portfolioLineOmitsByteFiguresWithoutAttribution() {
+    let withoutSizes = PortfolioSummary(
+        ecosystem: "node", projectCount: 2, packageManagers: nil, versionManagers: ["nvm"],
+        projectLocalInstallCount: nil, sharedStoreCount: nil, downloadCacheCount: nil,
+        buildOutputCount: nil, dominantPackageTool: "npm", projectLocalInstallBytes: nil,
+        sharedStoreBytes: nil, downloadCacheBytes: nil, buildOutputBytes: nil, sizesUncertain: nil)
+    let bare = portfolioLine(withoutSizes)
+    #expect(bare.contains("2 projects"))
+    #expect(bare.contains("dominant npm"))
+    #expect(bare.contains("VM: nvm"))
+    #expect(!bare.contains("local"))
+    #expect(!bare.contains("stores"))
+
+    let withSizes = PortfolioSummary(
+        ecosystem: "node", projectCount: 2, packageManagers: nil, versionManagers: nil,
+        projectLocalInstallCount: 2, sharedStoreCount: 1, downloadCacheCount: nil,
+        buildOutputCount: nil, dominantPackageTool: nil, projectLocalInstallBytes: 8192,
+        sharedStoreBytes: 4096, downloadCacheBytes: nil, buildOutputBytes: nil, sizesUncertain: nil)
+    let sized = portfolioLine(withSizes)
+    #expect(sized.contains("local"))
+    #expect(sized.contains("stores"))
+}
+
+@Test func activityLabelFormatsTimestampsAndPassesThroughGarbage() {
+    // A parseable RFC 3339 value must not be shown raw to the user.
+    #expect(activityLabel("2026-07-01T12:00:00Z") != "2026-07-01T12:00:00Z")
+    // An unreadable value is surfaced verbatim rather than silently dropped.
+    #expect(activityLabel("not-a-timestamp") == "not-a-timestamp")
+}

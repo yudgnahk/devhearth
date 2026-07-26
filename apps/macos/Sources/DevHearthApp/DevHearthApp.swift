@@ -200,23 +200,6 @@ struct ContentView: View {
         }
     }
 
-    private func portfolioLine(_ item: PortfolioSummary) -> String {
-        var parts = ["\(item.projectCount) projects"]
-        if let tool = item.dominantPackageTool, !tool.isEmpty {
-            parts.append("dominant \(tool)")
-        }
-        if let managers = item.versionManagers, !managers.isEmpty {
-            parts.append("VM: \(managers.joined(separator: ", "))")
-        }
-        if let bytes = item.projectLocalInstallBytes, bytes > 0 {
-            parts.append("local \(formatBytes(bytes))")
-        }
-        if let bytes = item.sharedStoreBytes, bytes > 0 {
-            parts.append("stores \(formatBytes(bytes))")
-        }
-        return parts.joined(separator: " · ")
-    }
-
     /// True when the process is running inside App Sandbox (not bare SPM/`make run`).
     private func isAppSandboxed() -> Bool {
         ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
@@ -349,7 +332,7 @@ struct AssetDetailView: View {
                     labeled("Allocated", sizeLine(size))
                 }
                 if let activity = asset.lastActivityAt, !activity.isEmpty {
-                    labeled("Last source activity", activity)
+                    labeled("Last source activity", activityLabel(activity))
                 }
 
                 if let evidence = asset.evidence, !evidence.isEmpty {
@@ -386,21 +369,5 @@ struct AssetDetailView: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
-    }
-
-    /// Shows the subtree total and, when they differ, the exclusive share that
-    /// excludes nested assets such as a project's own node_modules.
-    private func sizeLine(_ size: AssetSize) -> String {
-        var line = formatBytes(size.allocatedBytes)
-        if size.exclusiveAllocatedBytes != size.allocatedBytes {
-            line += " (\(formatBytes(size.exclusiveAllocatedBytes)) excluding nested assets)"
-        }
-        if size.shared == true {
-            line += " · shared store"
-        }
-        if size.uncertain == true {
-            line += " · lower bound (hard links present)"
-        }
-        return line
     }
 }

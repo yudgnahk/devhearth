@@ -77,19 +77,40 @@ func recommendationsList(id string, active *activeScan, family string) Recommend
 }
 
 func findRecommendation(active *activeScan, recommendationID string) (RecommendationSummary, bool) {
-	byID := assetIndex(active)
 	for _, recommendation := range active.advice.Recommendations {
 		if recommendation.ID == recommendationID {
+			// Resolve only this recommendation's assets, and only once it matched:
+			// an unknown id should not walk the graph at all.
+			byID := assetSubset(active, recommendation.AffectedAssetIDs)
 			return toWireRecommendation(recommendation, byID, active.result.Roots), true
 		}
 	}
 	return RecommendationSummary{}, false
 }
 
+// assetIndex maps every asset by id, for callers projecting the whole inbox.
 func assetIndex(active *activeScan) map[string]assets.Asset {
 	byID := make(map[string]assets.Asset, len(active.advice.Graph.Assets))
 	for _, asset := range active.advice.Graph.Assets {
 		byID[asset.ID] = asset
+	}
+	return byID
+}
+
+// assetSubset maps only the requested ids, for a single-recommendation lookup.
+func assetSubset(active *activeScan, ids []string) map[string]assets.Asset {
+	if len(ids) == 0 {
+		return nil
+	}
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[id] = struct{}{}
+	}
+	byID := make(map[string]assets.Asset, len(ids))
+	for _, asset := range active.advice.Graph.Assets {
+		if _, ok := wanted[asset.ID]; ok {
+			byID[asset.ID] = asset
+		}
 	}
 	return byID
 }
