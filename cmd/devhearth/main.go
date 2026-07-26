@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/detect"
 	"github.com/yudgnahk/devhearth/internal/detect/builtin"
@@ -53,11 +54,19 @@ func main() {
 			}
 			return detect.Run(ctx, registry, result, detect.RunOptions{Progress: progress})
 		},
-		OnComplete: func(ctx context.Context, result scan.Result, graph assets.Graph, status string, dirIndex map[string][]scan.DirectoryNode, progress func(written, total int64)) error {
+		Advise: func(ctx context.Context, _ scan.Result, graph assets.Graph, dirIndex map[string][]scan.DirectoryNode) (advisor.Result, error) {
+			if err := ctx.Err(); err != nil {
+				return advisor.Result{}, err
+			}
+			// Analysis is pure and in-memory; policy-driven weights arrive with
+			// the Phase 4 portable policy format.
+			return advisor.Analyze(graph, dirIndex, advisor.Options{}), nil
+		},
+		OnComplete: func(ctx context.Context, result scan.Result, advice advisor.Result, status string, dirIndex map[string][]scan.DirectoryNode, progress func(written, total int64)) error {
 			if inventory == nil {
 				return nil
 			}
-			_, err := inventory.SaveWithOptions(ctx, result, graph, status, store.SaveOptions{
+			_, err := inventory.SaveWithOptions(ctx, result, advice, status, store.SaveOptions{
 				DirectoryIndex: dirIndex,
 				Progress:       progress,
 			})

@@ -152,8 +152,11 @@ internal/detect/python/  Python environments and package tools
 internal/detect/runtime/ Version managers and runtime installations
 internal/detect/ai/      Models, datasets, and AI tools
 internal/assets/         Asset and relationship model
+internal/attribute/      Size and source-activity attribution onto assets
 internal/portfolio/      Tool portfolio aggregation and fit scoring
 internal/recommend/      Deterministic recommendation rules
+internal/advisor/        Composes attribution, fit scoring, and rules
+internal/bytesize/       Human-readable byte formatting for explanations
 internal/policy/         Portable policy parsing
 internal/store/          SQLite repository and migrations
 internal/report/         JSON and human-readable output
@@ -167,6 +170,7 @@ Suggested Go technologies:
 - `golang.org/x/sys/unix` for Darwin metadata not exposed by the standard library.
 - SQLite in WAL mode. Prefer a pure-Go driver if profiling shows acceptable behavior; otherwise evaluate a cgo-backed driver for the packaged macOS build.
 - Persist scans with multi-row inserts, parent ids written at insert time, and optional progress (`scan.progress` phase `persist`). Durable inventory omits interiors of high-fanout trees (`node_modules`, `.git`, build outputs, etc.) while keeping the marker directories and asset paths; the live session still uses the full in-memory inventory for drill-down.
+- Run analysis before persistence so one transaction stores the attributed graph, its fit assessments, and its recommendations together (migration 005). A scan is never durable with advice that disagrees with the graph it came from.
 - Native `git` subprocess calls for authoritative advanced status in the first version, behind an interface. Avoid reimplementing all Git semantics prematurely.
 - `encoding/json` for protocol compatibility; optimize serialization only if profiles justify it.
 - `slog` for structured engine logging.
@@ -358,6 +362,8 @@ Initial methods:
 Mutation methods must be introduced in a later protocol version.
 
 Phase 0 implements only `engine.hello`, mocked `scan.start`, and `scan.progress`. Cancellation, status queries, inventory methods, and exports begin with their owning roadmap phases; accepting a cancellation token in Phase 0 reserves the wire shape but does not imply cancellation support.
+
+Phase 3 adds `fit.list`, `fit.get`, `recommendations.list` (optionally filtered by family), and `recommendations.get`, plus an `advice` progress phase between `detection` and `persist`. `portfolio.get` remains unimplemented. Recommendation evidence, affected-asset paths, and asset attributes are redacted against the selected roots exactly like inventory paths; recommendation identifiers are hashes of a family plus its scope keys, so they are stable across rescans and carry no path.
 
 ## Repository layout
 

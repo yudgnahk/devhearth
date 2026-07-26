@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/scan"
 )
@@ -90,12 +91,12 @@ func TestAssetsListRedactsPathsAndIncludesEvidence(t *testing.T) {
 	active := &activeScan{
 		status: "complete",
 		result: scan.Result{Roots: []string{"/Users/example/Projects"}},
-		graph: assets.Graph{Assets: []assets.Asset{{
+		advice: advisor.Result{Graph: assets.Graph{Assets: []assets.Asset{{
 			ID: "a1", Kind: assets.KindProject, DisplayName: "app",
 			Path: "/Users/example/Projects/app", Risk: assets.RiskInformational,
 			Ecosystem: "node", DetectorID: "detect.node", DetectorVersion: 1,
 			Evidence: []assets.Evidence{{Kind: "path_signature", Value: "/Users/example/Projects/app/package.json", Confidence: 0.9}},
-		}}},
+		}}}},
 	}
 	listed := assetsList("scan_01", active)
 	if listed.Assets[0].Path != "<selected-root-1>/app" {
@@ -156,7 +157,7 @@ func TestAssetsListRedactsAttributePaths(t *testing.T) {
 	active := &activeScan{
 		status: "complete",
 		result: scan.Result{Roots: []string{"/Users/example/Projects"}},
-		graph: assets.Graph{Assets: []assets.Asset{{
+		advice: advisor.Result{Graph: assets.Graph{Assets: []assets.Asset{{
 			ID: "wt1", Kind: assets.KindGitWorktree, DisplayName: "feature",
 			Path: "/Users/example/Projects/feature", Risk: assets.RiskInformational,
 			DetectorID: "detect.git", DetectorVersion: 1,
@@ -165,7 +166,7 @@ func TestAssetsListRedactsAttributePaths(t *testing.T) {
 				"gitdir":   "/Users/example/Projects/main/.git/worktrees/feature",
 				"tool":     "git",
 			},
-		}}},
+		}}}},
 	}
 	listed := assetsList("scan_01", active)
 	attrs := listed.Assets[0].Attributes

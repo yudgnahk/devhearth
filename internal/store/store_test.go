@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/scan"
 )
@@ -36,7 +37,7 @@ func TestSavePersistsInventoryAndAssets(t *testing.T) {
 		Relationships: nil,
 	}
 	var lastWritten, lastTotal int64
-	id, err := database.SaveWithOptions(context.Background(), result, graph, "complete", SaveOptions{
+	id, err := database.SaveWithOptions(context.Background(), result, advisor.Result{Graph: graph}, "complete", SaveOptions{
 		Progress: func(written, total int64) {
 			lastWritten, lastTotal = written, total
 		},
@@ -121,7 +122,7 @@ func TestSaveSkipsBulkTreeInteriors(t *testing.T) {
 			{Path: "/proj/src/main.go", ParentPath: "/proj/src", Kind: "file", LogicalBytes: 20, AllocatedBytes: 4096, DeviceID: 1, Inode: 6, LinkCount: 1, ModifiedAt: now},
 		},
 	}
-	id, err := database.Save(context.Background(), result, assets.Graph{}, "complete")
+	id, err := database.Save(context.Background(), result, advisor.Result{}, "complete")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +229,7 @@ func TestSavePrunesGeneratedOutputOnlyWithSiblingEvidence(t *testing.T) {
 				Roots: []string{test.entries[0].Path}, StartedAt: now, CompletedAt: now,
 				Entries: test.entries,
 			}
-			id, err := database.Save(context.Background(), result, assets.Graph{}, "complete")
+			id, err := database.Save(context.Background(), result, advisor.Result{}, "complete")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -279,7 +280,7 @@ func TestSaveKeepsDurableConnectionSettings(t *testing.T) {
 			{Path: "/fixtures", Kind: "directory", DeviceID: 1, Inode: 1, LinkCount: 1, ModifiedAt: now},
 		},
 	}
-	if _, err := database.Save(context.Background(), result, assets.Graph{}, "complete"); err != nil {
+	if _, err := database.Save(context.Background(), result, advisor.Result{}, "complete"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -307,5 +308,61 @@ func TestMigrationAppliesAssetGraphColumns(t *testing.T) {
 	}
 	if version < 4 {
 		t.Fatalf("schema version = %d, want >= 4", version)
+	}
+}
+
+func TestSaveAcceptsASecondScanIntoTheSameDatabase(t *testing.T) {
+	// filesystem_entries.id is global, so numbering each scan's rows from 1
+	// collided with every earlier scan and the second save always failed. The
+	// engine's default database is long-lived, so this broke the second scan a
+	// user ever ran.
+	path := filepath.Join(t.TempDir(), "inventory.sqlite")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	now := time.Now().UTC()
+	result := scan.Result{
+		Roots: []string{"/fixtures"}, StartedAt: now, CompletedAt: now,
+		Entries: []scan.Entry{
+			{Path: "/fixtures", Kind: "directory", DeviceID: 1, Inode: 1, LinkCount: 1, ModifiedAt: now},
+			{Path: "/fixtures/data", ParentPath: "/fixtures", Kind: "file", LogicalBytes: 3, AllocatedBytes: 4096, DeviceID: 1, Inode: 2, LinkCount: 1, ModifiedAt: now},
+		},
+	}
+
+	firstScan, err := database.Save(context.Background(), result, advisor.Result{}, "complete")
+	if err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	secondScan, err := database.Save(context.Background(), result, advisor.Result{}, "complete")
+	if err != nil {
+		t.Fatalf("second save into the same database: %v", err)
+	}
+	if firstScan == secondScan {
+		t.Fatal("each scan needs its own id")
+	}
+
+	// Both scans keep their own rows, and parent links stay within their scan.
+	for _, scanID := range []string{firstScan, secondScan} {
+		var rows int
+		if err := database.db.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM filesystem_entries WHERE scan_id = ?`, scanID).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 2 {
+			t.Fatalf("scan %s persisted %d entries, want 2", scanID, rows)
+		}
+		var crossed int
+		if err := database.db.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM filesystem_entries child
+			   JOIN filesystem_entries parent ON parent.id = child.parent_id
+			  WHERE child.scan_id = ? AND parent.scan_id <> child.scan_id`, scanID).Scan(&crossed); err != nil {
+			t.Fatal(err)
+		}
+		if crossed != 0 {
+			t.Fatalf("scan %s has %d entries parented to another scan", scanID, crossed)
+		}
 	}
 }

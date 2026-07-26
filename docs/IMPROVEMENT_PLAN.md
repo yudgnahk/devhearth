@@ -257,24 +257,38 @@ shippable and test-first friendly.
 | Scan history and reload | Direct payoff of R1; enables "what grew since last week?" |
 | Resumable checkpoints, pause/resume | Open Phase 1 task; persist the walk frontier per volume |
 | Signed `.app` with security-scoped bookmarks | Open Phase 1 task; today it is an SPM binary plus `DEVHEARTH_ENGINE_PATH`. Needs an Xcode/xcodegen project, codesign, notarization, engine bundled as an auxiliary executable |
-| **Size attribution onto assets** | Open Phase 2 task; join `directory_aggregates` totals onto asset paths. Prerequisite for any advisor value — without bytes, recommendations cannot be ranked |
+| ~~**Size attribution onto assets**~~ | Done in `internal/attribute`: subtree totals from the inventory rollup, exclusive bytes that subtract nested assets, shared-store and hard-link uncertainty flags, plus source activity that skips generated trees and `.git` |
 | Deep Git status | Guarded `git` subprocess behind an interface (dirty tree, unpushed commits); feeds hibernation safety |
 | Homebrew / Xcode / SDKMAN / Docker Desktop data roots | Beyond directory-name signatures; these are the largest real consumers on developer Macs |
 
 ### U2 — Begin Phase 3, the optimization advisor
 
-1. Deterministic rule framework:
-   `Rule(graph, sizes) -> []Recommendation{savingsRange, confidence, evidence, restorationCost, blockers, risk}`
-   — pure functions, table-tested, no mutation.
-2. First rules, all computable once size attribution lands:
-   - Reproducible build output and `node_modules` hibernation candidates
-     (lockfile present, clean git, untouched for N days).
-   - Duplicate runtime and version-manager detection (nvm + mise + Volta all
-     present).
-   - Duplicate checkouts of the same repository (same remote across paths).
-   - Stale download caches per ecosystem.
-3. A `recommendations.list` method plus persistence, carrying an explicit
-   advice-only flag to preserve the trust model.
+Status: started. The framework, fit scoring, six rule families, `fit.*` and
+`recommendations.*` methods, persistence, and the inbox UI are in place; see
+[the Phase 3 task list](PHASE_3_TASKS.md). Duplicate-checkout detection by
+remote and stale download caches are not yet rules, and both hibernation and
+worktree advice stay blocked until deep Git verification lands.
+
+1. ~~Deterministic rule framework:~~ done — `Rule(Input) -> []Recommendation`
+   in `internal/recommend`, pure and table-tested, with ranking derived from
+   savings, risk, and confidence rather than supplied by a rule.
+2. First rules:
+   - [x] Reproducible `node_modules` and virtualenv hibernation candidates
+         (lockfile present, untouched for N days). Clean-git verification is
+         still missing, so every candidate carries that as a blocker.
+   - [x] Duplicate runtime and version-manager detection (nvm + mise + Volta all
+         present).
+   - [x] Shared dependency store adoption and portfolio-fit standardization,
+         which the original list did not anticipate.
+   - [x] Duplicate downloadable AI models by name and size.
+   - [x] Obsolete Git worktree candidates.
+   - [ ] Duplicate checkouts of the same repository (same remote across paths) —
+         needs remote inspection, which waits on deep Git status.
+   - [ ] Stale download caches per ecosystem.
+3. ~~A `recommendations.list` method plus persistence, carrying an explicit
+   advice-only flag to preserve the trust model.~~ done — `recommendations.list`,
+   `recommendations.get`, `fit.list`, and `fit.get`, with `adviceOnly: true` on
+   every recommendation and migration 005 for persistence.
 
 ### U3 — Engine and platform
 

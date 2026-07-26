@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Drive a one-shot read-only scan over JSON-RPC and print assets/portfolio/report.
+# Drive a one-shot read-only scan over JSON-RPC and print
+# assets/portfolio/fit/recommendations/report.
 # Usage: scan-roots.sh <engine-binary> <root-path> [database-path]
 set -euo pipefail
 
@@ -88,7 +89,13 @@ while time.time() < deadline:
 else:
     raise SystemExit("scan timed out")
 
-for req_id, method in (("3", "assets.list"), ("4", "portfolio.list"), ("5", "report.export")):
+for req_id, method in (
+    ("3", "assets.list"),
+    ("4", "portfolio.list"),
+    ("5", "fit.list"),
+    ("6", "recommendations.list"),
+    ("7", "report.export"),
+):
     send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": {"scanId": scan_id}})
     resp = read()
     if "error" in resp:
