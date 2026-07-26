@@ -43,7 +43,11 @@ final class EngineClient {
     private(set) var relationships: [RelationshipSummary] = []
     private(set) var portfolio: [PortfolioSummary] = []
     private(set) var recommendations: [RecommendationSummary] = []
+    private(set) var suppressedRecommendations: [RecommendationSummary] = []
+    private(set) var hiddenByRiskCount = 0
     private(set) var fit: [FitAssessment] = []
+    private(set) var policy: PolicyResult?
+    private(set) var trends: TrendReport?
     private(set) var directoryChildren: [DirectoryChild] = []
     private(set) var directoryPath = "" // redacted display path of current folder
     private(set) var directoryPathKey = "" // absolute key for inventory.children
@@ -89,6 +93,10 @@ final class EngineClient {
                   hello.readOnly else {
                 throw EngineClientError.incompatibleEngine
             }
+            // Policy and history are read on connect, not on first scan: the
+            // policy view has to be usable before anything has been scanned.
+            await loadPolicy()
+            await loadTrends()
             status = "Engine ready · choose a folder to scan"
         } catch {
             errorMessage = error.localizedDescription
@@ -107,6 +115,8 @@ final class EngineClient {
             relationships = []
             portfolio = []
             recommendations = []
+            suppressedRecommendations = []
+            hiddenByRiskCount = 0
             fit = []
             directoryChildren = []
             directoryPath = ""
@@ -124,6 +134,8 @@ final class EngineClient {
                 method: "scan.start",
                 params: ScanStartParams(roots: roots, cancellationToken: UUID().uuidString)
             )
+            // The engine resolves the active policy for this scan; no policy id
+            // is sent, so a stale client-side id can never override it.
             activeScanID = started.scanId
             status = "Scan running"
             try await waitForScanComplete()
@@ -150,11 +162,7 @@ final class EngineClient {
             )
             fit = fitResult.fit
 
-            let adviceResult: RecommendationsListResult = try await request(
-                method: "recommendations.list",
-                params: RecommendationsListParams(scanId: scanID)
-            )
-            recommendations = adviceResult.recommendations
+            try await loadRecommendations(scanID: scanID)
 
             let report: ScanReport = try await request(
                 method: "report.export",
@@ -163,6 +171,7 @@ final class EngineClient {
             lastReport = report
 
             try await loadChildren(pathKey: "")
+            await loadTrends()
             hasCompletedScan = true
             status = "Scan complete · \(assets.count) assets · \(recommendations.count) recommendations"
         } catch {
@@ -220,6 +229,130 @@ final class EngineClient {
         } catch {
             errorMessage = error.localizedDescription
             status = "Browse failed"
+        }
+    }
+
+    /// Reloads the inbox, keeping suppressed advice in a separate list so the
+    /// UI can offer to undo a decision without ever mixing it into live advice.
+    func loadRecommendations(scanID: String) async throws {
+        let visible: RecommendationsListResult = try await request(
+            method: "recommendations.list",
+            params: RecommendationsListParams(scanId: scanID, include: nil)
+        )
+        recommendations = visible.recommendations
+        hiddenByRiskCount = visible.hiddenByRiskCount ?? 0
+
+        guard (visible.suppressedCount ?? 0) > 0 else {
+            suppressedRecommendations = []
+            return
+        }
+        let hidden: RecommendationsListResult = try await request(
+            method: "recommendations.list",
+            params: RecommendationsListParams(scanId: scanID, include: "suppressed")
+        )
+        suppressedRecommendations = hidden.recommendations
+    }
+
+    /// Reads the active policy. Failures are surfaced but never fatal: the app
+    /// still scans without a readable policy, using the engine's defaults.
+    func loadPolicy() async {
+        do {
+            policy = try await request(method: "policy.get", params: PolicyGetParams(policyId: nil))
+        } catch {
+            policy = nil
+            errorMessage = "Policy unavailable: \(error.localizedDescription)"
+        }
+    }
+
+    func savePolicy(_ document: PolicyDocument) async {
+        do {
+            policy = try await request(method: "policy.set", params: PolicySetParams(document: document))
+            errorMessage = nil
+            status = "Policy saved"
+            await refreshAdviceForPolicyChange()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Returns the exact bytes to write to a policy file. The client never
+    /// re-encodes: what the engine validated is what lands on disk.
+    func exportPolicy() async throws -> PolicyExportResult {
+        try await request(method: "policy.export", params: PolicyExportParams(policyId: nil))
+    }
+
+    func importPolicy(from url: URL) async {
+        do {
+            let data = try Data(contentsOf: url)
+            guard let text = String(data: data, encoding: .utf8) else {
+                errorMessage = "That file is not valid UTF-8 text."
+                return
+            }
+            policy = try await request(
+                method: "policy.import",
+                params: PolicyImportParams(document: text, activate: true)
+            )
+            errorMessage = nil
+            status = "Policy imported"
+            await refreshAdviceForPolicyChange()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Hides or restores advice. A suppression is a display decision recorded in
+    /// the portable policy; it never marks work as done.
+    func suppress(_ params: RecommendationsSuppressParams) async {
+        do {
+            policy = try await request(method: "recommendations.suppress", params: params)
+            errorMessage = nil
+            await refreshAdviceForPolicyChange()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Records a local verdict. Feedback has no export path on the engine side.
+    func sendFeedback(recommendation: RecommendationSummary, verdict: String, note: String?) async {
+        do {
+            let result: RecommendationsFeedbackResult = try await request(
+                method: "recommendations.feedback",
+                params: RecommendationsFeedbackParams(
+                    scanId: activeScanID,
+                    recommendationId: recommendation.id,
+                    family: recommendation.family,
+                    ecosystem: recommendation.ecosystem,
+                    verdict: verdict,
+                    note: note
+                )
+            )
+            errorMessage = nil
+            status = "Recorded \(result.verdict) (stays on this Mac)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func loadTrends() async {
+        do {
+            let result: TrendsListResult = try await request(
+                method: "trends.list",
+                params: TrendsListParams(limit: nil)
+            )
+            trends = result.trends
+        } catch {
+            trends = nil
+        }
+    }
+
+    /// A policy edit changes which advice is shown, so the inbox is refetched
+    /// rather than filtered locally: the engine owns what a policy hides.
+    private func refreshAdviceForPolicyChange() async {
+        guard hasCompletedScan, let scanID = activeScanID else { return }
+        do {
+            try await loadRecommendations(scanID: scanID)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

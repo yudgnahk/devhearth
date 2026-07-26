@@ -5,9 +5,10 @@ import (
 	"sort"
 )
 
-// Factor weights. They sum to 1.0 so a score is directly comparable between
-// options, and disk savings deliberately never dominate on their own
-// (SPECS §7.5: fit is multi-factor, not disk-first).
+// Balanced factor weights. They sum to 1.0 so a score is directly comparable
+// between options, and disk savings deliberately never dominate on their own
+// (SPECS §7.5: fit is multi-factor, not disk-first). A policy may select a
+// different named tradeoff or override individual weights; see weights.go.
 const (
 	weightInstalledPresence = 0.10
 	weightInUseShare        = 0.30
@@ -31,8 +32,9 @@ const (
 	largePortfolio = 6
 )
 
-// scoreOption builds one ranked option from ecosystem signals.
-func scoreOption(current *signals, tool string, preferred string) Option {
+// scoreOption builds one ranked option from ecosystem signals under the
+// resolved policy weights.
+func scoreOption(current *signals, tool string, preferred string, weights Weights) Option {
 	dominant := current.dominantTool()
 	stayPut := tool == dominant && dominant != ""
 	_, installed := current.installed[tool]
@@ -56,7 +58,7 @@ func scoreOption(current *signals, tool string, preferred string) Option {
 	friction, blockers := migrationFriction(current, tool, stayPut)
 	option.Blockers = blockers
 	option.WorkflowImpact = workflowImpact(stayPut, tool, friction)
-	option.Factors = factors(current, tool, preferred, stayPut, installed, inUse, estimate, friction)
+	option.Factors = factors(current, tool, preferred, stayPut, installed, inUse, estimate, friction, weights)
 	option.Score = weightedScore(option.Factors)
 	option.DominantFactors = dominantFactors(option.Factors)
 	option.Confidence = confidence(current, installed, inUse)
@@ -70,6 +72,7 @@ func factors(
 	inUse int,
 	estimate savingsEstimate,
 	friction float64,
+	weights Weights,
 ) []Factor {
 	projects := current.projectCount()
 	inUseShare := share(inUse, projects)
@@ -91,19 +94,19 @@ func factors(
 	}
 
 	return []Factor{
-		{Kind: FactorInstalledPresence, Score: presence, Weight: weightInstalledPresence,
+		{Kind: FactorInstalledPresence, Score: presence, Weight: weights.weightFor(FactorInstalledPresence),
 			Detail: presenceDetail(installed, inUse)},
-		{Kind: FactorInUseShare, Score: inUseShare, Weight: weightInUseShare,
+		{Kind: FactorInUseShare, Score: inUseShare, Weight: weights.weightFor(FactorInUseShare),
 			Detail: fmt.Sprintf("%d of %d detected projects already use %s", inUse, projects, tool)},
-		{Kind: FactorDuplicationCost, Score: clamp(estimate.share), Weight: weightDuplicationCost,
+		{Kind: FactorDuplicationCost, Score: clamp(estimate.share), Weight: weights.weightFor(FactorDuplicationCost),
 			Detail: duplicationDetail(current, estimate)},
-		{Kind: FactorReproducibility, Score: reproducible, Weight: weightReproducibility,
+		{Kind: FactorReproducibility, Score: reproducible, Weight: weights.weightFor(FactorReproducibility),
 			Detail: fmt.Sprintf("%d of %d projects carry a lockfile", current.lockfileProjects, projects)},
-		{Kind: FactorMigrationFriction, Score: clamp(1 - friction), Weight: weightMigrationFriction,
+		{Kind: FactorMigrationFriction, Score: clamp(1 - friction), Weight: weights.weightFor(FactorMigrationFriction),
 			Detail: frictionDetail(stayPut, friction)},
-		{Kind: FactorProjectActivity, Score: activityScore, Weight: weightProjectActivity,
+		{Kind: FactorProjectActivity, Score: activityScore, Weight: weights.weightFor(FactorProjectActivity),
 			Detail: fmt.Sprintf("%d of %d projects changed recently", current.activeProjects, projects)},
-		{Kind: FactorPolicyPreference, Score: policyScore, Weight: weightPolicyPreference,
+		{Kind: FactorPolicyPreference, Score: policyScore, Weight: weights.weightFor(FactorPolicyPreference),
 			Detail: policyDetail(preferred)},
 	}
 }

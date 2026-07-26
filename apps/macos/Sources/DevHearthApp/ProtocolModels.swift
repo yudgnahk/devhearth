@@ -24,7 +24,12 @@ struct HelloResult: Decodable {
 
 struct ScanStartParams: Encodable {
     let roots: [String]
-    let policyId = "default"
+    /// Empty selects the engine's active policy. A hardcoded id here would make
+    /// every scan miss the user's stored preferences.
+    var policyId: String?
+    /// Asks the engine to resolve the policy's portable roots itself, so the
+    /// absolute paths never cross the protocol boundary.
+    var usePolicyRoots: Bool?
     let cancellationToken: String
 }
 
@@ -144,7 +149,11 @@ struct PortfolioSummary: Codable, Identifiable, Hashable {
 
 struct FitListParams: Encodable { let scanId: String }
 
-struct RecommendationsListParams: Encodable { let scanId: String }
+struct RecommendationsListParams: Encodable {
+    let scanId: String
+    /// "visible" (default), "suppressed", or "all".
+    var include: String?
+}
 
 /// One weighted signal behind a fit option, with the detail string the engine
 /// produced so the UI never re-derives an explanation.
@@ -188,6 +197,8 @@ struct FitAssessment: Decodable, Identifiable, Hashable {
     let projectLocalInstallBytes: Int64?
     let sharedStoreBytes: Int64?
     let versionManagers: [String]?
+    /// Policy weighting tradeoff that produced this ranking.
+    let fitMode: String?
 
     var isDeep: Bool { depth == "deep" }
 }
@@ -247,13 +258,23 @@ struct RecommendationSummary: Decodable, Identifiable, Hashable {
     let ruleVersion: Int
     /// The engine restates that this protocol version cannot execute advice.
     let adviceOnly: Bool?
+    /// Marks advice the active policy is currently hiding. It travels with the
+    /// item so suppressed advice can never be shown as if it were live.
+    let suppressed: Bool?
+    /// Marks advice above the policy's risk display threshold.
+    let hiddenByRisk: Bool?
 
     var isBlocked: Bool { !(blockers ?? []).isEmpty }
+    var isSuppressed: Bool { suppressed == true }
 }
 
 struct RecommendationsListResult: Decodable {
     let scanId: String
     let recommendations: [RecommendationSummary]
+    /// What the active policy withheld, so a shorter inbox is explainable.
+    let suppressedCount: Int?
+    let hiddenByRiskCount: Int?
+    let riskThreshold: String?
 }
 
 /// Report-level roll-up of advice. Savings bounds stay separate on purpose.
@@ -267,6 +288,16 @@ struct AdviceSummary: Codable, Hashable {
     let savingsUncertain: Bool?
     let fit: [FitHeadline]?
     let topRecommendationTitle: String?
+    let suppressedCount: Int?
+    let hiddenByRiskCount: Int?
+    let fitMode: String?
+    let riskThreshold: String?
+    /// Savings bounds cover every recommendation the rules produced, including
+    /// advice the policy is hiding, so hiding something never reads as having
+    /// recovered it. The withheld portion is reported separately.
+    let totalRecommendationCount: Int?
+    let withheldSavingsLowBytes: Int64?
+    let withheldSavingsHighBytes: Int64?
 }
 
 struct FitHeadline: Codable, Hashable {

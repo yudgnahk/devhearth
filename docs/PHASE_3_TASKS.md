@@ -65,7 +65,11 @@ never mutates a scanned path.
       summing. Resolve this together with plan comparison below, since both
       need the same grouping.
 - [ ] Plan comparison UI with before/after estimates.
-- [ ] Policy-driven fit weights (waits on the Phase 4 policy format).
+- [x] Policy-driven fit weights. Landed with the Phase 4 policy format: named
+      tradeoffs (`balanced`, `prefer_disk_savings`, `prefer_workflow_stability`)
+      plus per-factor overrides, renormalized before scoring. Every mode still
+      ranks all options and still includes stay-put, and no mode is allowed to
+      zero out migration friction.
 
 ## Boundaries for this phase
 

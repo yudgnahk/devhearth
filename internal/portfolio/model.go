@@ -75,6 +75,12 @@ type Assessment struct {
 	Options []Option `json:"options,omitempty"`
 	Notes   []string `json:"notes,omitempty"`
 
+	// FitMode names the weighting tradeoff that produced this ranking. It
+	// travels with the assessment because the same portfolio ranks differently
+	// under a different policy, and a user comparing two machines needs to see
+	// which tradeoff each one used.
+	FitMode string `json:"fitMode,omitempty"`
+
 	ProjectLocalInstallBytes int64    `json:"projectLocalInstallBytes,omitempty"`
 	SharedStoreBytes         int64    `json:"sharedStoreBytes,omitempty"`
 	VersionManagers          []string `json:"versionManagers,omitempty"`
@@ -88,9 +94,15 @@ type Input struct {
 	// ActiveWithin is how recently a project must have changed to count as
 	// active. Zero selects DefaultActiveWithin.
 	ActiveWithin time.Duration
-	// Preferred maps ecosystem to a user-preferred tool. Phase 4 policy will
-	// supply this; an empty map leaves the policy factor neutral.
+	// Preferred maps ecosystem to a user-preferred tool. The Phase 4 policy
+	// supplies this; an empty map leaves the policy factor neutral.
 	Preferred map[string]string
+	// FitMode selects a named weighting tradeoff. An empty or unknown mode uses
+	// the balanced default.
+	FitMode string
+	// WeightOverrides adjusts individual factor weights by name. Unknown factor
+	// names are ignored, and the resulting set is renormalized before use.
+	WeightOverrides map[string]float64
 }
 
 // DefaultActiveWithin treats a quarter of source inactivity as dormant. It is a

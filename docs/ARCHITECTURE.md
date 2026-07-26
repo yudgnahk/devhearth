@@ -157,7 +157,8 @@ internal/portfolio/      Tool portfolio aggregation and fit scoring
 internal/recommend/      Deterministic recommendation rules
 internal/advisor/        Composes attribution, fit scoring, and rules
 internal/bytesize/       Human-readable byte formatting for explanations
-internal/policy/         Portable policy parsing
+internal/policy/         Portable policy document, validation, and overlays
+internal/trend/          Path-free scan snapshots, growth series, regressions
 internal/store/          SQLite repository and migrations
 internal/report/         JSON and human-readable output
 internal/platform/       Platform interfaces
@@ -170,7 +171,8 @@ Suggested Go technologies:
 - `golang.org/x/sys/unix` for Darwin metadata not exposed by the standard library.
 - SQLite in WAL mode. Prefer a pure-Go driver if profiling shows acceptable behavior; otherwise evaluate a cgo-backed driver for the packaged macOS build.
 - Persist scans with multi-row inserts, parent ids written at insert time, and optional progress (`scan.progress` phase `persist`). Durable inventory omits interiors of high-fanout trees (`node_modules`, `.git`, build outputs, etc.) while keeping the marker directories and asset paths; the live session still uses the full in-memory inventory for drill-down.
-- Run analysis before persistence so one transaction stores the attributed graph, its fit assessments, and its recommendations together (migration 005). A scan is never durable with advice that disagrees with the graph it came from.
+- Run analysis before persistence so one transaction stores the attributed graph, its fit assessments, and its recommendations together (migration 005). A scan is never durable with advice that disagrees with the graph it came from. The same transaction writes the Phase 4 trend snapshot (migration 006), so history can never describe a scan that failed to persist.
+- Store policies as the exact portable JSON a user would export, so the stored form and the shared form cannot drift apart, and revalidate on every read: the database file is local, but it is still a file somebody can edit.
 - Native `git` subprocess calls for authoritative advanced status in the first version, behind an interface. Avoid reimplementing all Git semantics prematurely.
 - `encoding/json` for protocol compatibility; optimize serialization only if profiles justify it.
 - `slog` for structured engine logging.
@@ -223,6 +225,12 @@ An asset is a logical object; locations are paths or runtime identifiers. This a
 `ToolInstallation` is the common supertype for discovered tools. `RuntimeInstallation`, `PackageManagerInstallation`, and `DependencyStore` specialize it so recommendations can treat version managers, package managers, and stores as distinct classes (see product taxonomy in SPECS).
 
 `PortfolioSummary` aggregates installed tools, in-use project counts, and storage by class for an ecosystem. `FitAssessment` stores ranked options, factor scores, blockers, savings ranges, and the stay-put baseline for a portfolio or project set. Fit assessments feed recommendations; they never authorize mutation.
+
+`Policy` is the portable preference document (SPECS §7.10). Portability is structural: no field can hold an absolute path, so a scan root is stored as an alias plus a relative segment and an export cannot leak the machine's layout even if a future writer forgets to redact. Machine overlays attach to a policy and are resolved, least specific first, into the effective policy one scan runs under.
+
+`ScanSnapshot` is the Phase 4 trend record: per-scan totals plus byte figures for a small set of named series (per ecosystem, per storage class). It holds no paths, so retaining a year of history does not create a second copy of the inventory. Each snapshot carries a `scope_key`, a one-way digest of the scan's roots, so only comparable scans are compared; the digest never leaves the local database.
+
+`RecommendationFeedback` records a local verdict on a recommendation. It has no export path by design: a verdict is a usage trace. A decision the user wants to travel is recorded instead as a policy suppression, which is path-free and portable.
 
 Relationships use typed edges such as:
 
@@ -356,14 +364,27 @@ Initial methods:
 - `recommendations.list`
 - `recommendations.get`
 - `report.export` (redacted summary; UI writes the user-chosen JSON file)
-- `policy.validate`
+- `policy.get`
+- `policy.set`
 - `policy.export`
+- `policy.import`
+- `recommendations.suppress`
+- `recommendations.feedback`
+- `trends.list`
 
 Mutation methods must be introduced in a later protocol version.
 
 Phase 0 implements only `engine.hello`, mocked `scan.start`, and `scan.progress`. Cancellation, status queries, inventory methods, and exports begin with their owning roadmap phases; accepting a cancellation token in Phase 0 reserves the wire shape but does not imply cancellation support.
 
 Phase 3 adds `fit.list`, `fit.get`, `recommendations.list` (optionally filtered by family), and `recommendations.get`, plus an `advice` progress phase between `detection` and `persist`. `portfolio.get` remains unimplemented. Recommendation evidence, affected-asset paths, and asset attributes are redacted against the selected roots exactly like inventory paths; recommendation identifiers are hashes of a family plus its scope keys, so they are stable across rescans and carry no path.
+
+Phase 4 adds `policy.get`, `policy.set`, `policy.export`, `policy.import`, `recommendations.suppress`, `recommendations.feedback`, and `trends.list`. `policy.validate` is not a separate method: every write path validates, so a client cannot store something a validator would have refused.
+
+Three boundary rules govern these methods:
+
+- Policy responses carry portable forms only. A scan root travels as `~/Projects`, never as the absolute path it resolves to on this machine, and `scan.start` accepts `usePolicyRoots` so the engine resolves those roots itself rather than receiving absolute paths from the client.
+- Both `policy.set` and `policy.import` run the same validation. A document assembled by the UI is no more trusted than a file received from somebody else.
+- `recommendations.list` gains an `include` filter (`visible`, `suppressed`, `all`) plus `suppressedCount` and `hiddenByRiskCount`. Suppressed items carry `suppressed: true` on the wire, so a client cannot present hidden advice as live, and a shorter inbox is always explainable rather than silently shorter.
 
 ## Repository layout
 

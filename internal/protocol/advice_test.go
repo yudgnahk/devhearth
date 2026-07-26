@@ -11,6 +11,7 @@ import (
 	"github.com/yudgnahk/devhearth/internal/advisor"
 	"github.com/yudgnahk/devhearth/internal/assets"
 	"github.com/yudgnahk/devhearth/internal/detect"
+	"github.com/yudgnahk/devhearth/internal/policy"
 	"github.com/yudgnahk/devhearth/internal/portfolio"
 	"github.com/yudgnahk/devhearth/internal/recommend"
 	"github.com/yudgnahk/devhearth/internal/scan"
@@ -63,7 +64,7 @@ func adviceScan() *activeScan {
 }
 
 func TestRecommendationsListRedactsEvidencePaths(t *testing.T) {
-	listed := recommendationsList("scan_01", adviceScan(), "")
+	listed := recommendationsList("scan_01", adviceScan(), "", "")
 
 	if len(listed.Recommendations) != 1 {
 		t.Fatalf("want one recommendation, got %d", len(listed.Recommendations))
@@ -88,7 +89,7 @@ func TestRecommendationsListRedactsEvidencePaths(t *testing.T) {
 }
 
 func TestRecommendationsListCarriesSafetyFields(t *testing.T) {
-	recommendation := recommendationsList("scan_01", adviceScan(), "").Recommendations[0]
+	recommendation := recommendationsList("scan_01", adviceScan(), "", "").Recommendations[0]
 
 	if recommendation.Risk != "medium" || recommendation.Confidence == 0 {
 		t.Fatalf("risk and confidence must travel: %#v", recommendation)
@@ -113,10 +114,10 @@ func TestRecommendationsListCarriesSafetyFields(t *testing.T) {
 func TestRecommendationsListFiltersByFamily(t *testing.T) {
 	active := adviceScan()
 
-	if got := recommendationsList("scan_01", active, "adopt_shared_store"); len(got.Recommendations) != 1 {
+	if got := recommendationsList("scan_01", active, "adopt_shared_store", ""); len(got.Recommendations) != 1 {
 		t.Fatalf("matching family should return the recommendation: %#v", got)
 	}
-	if got := recommendationsList("scan_01", active, "hibernate_inactive_project"); len(got.Recommendations) != 0 {
+	if got := recommendationsList("scan_01", active, "hibernate_inactive_project", ""); len(got.Recommendations) != 0 {
 		t.Fatalf("non-matching family should return nothing: %#v", got)
 	}
 }
@@ -266,7 +267,7 @@ func TestRunScanProducesAdviceAndPersistsAttributedGraph(t *testing.T) {
 		Detect: func(context.Context, scan.Result, func(detect.Progress)) (assets.Graph, error) {
 			return graph, nil
 		},
-		Advise: func(_ context.Context, _ scan.Result, detected assets.Graph, index map[string][]scan.DirectoryNode) (advisor.Result, error) {
+		Advise: func(_ context.Context, _ scan.Result, detected assets.Graph, index map[string][]scan.DirectoryNode, _ policy.Effective) (advisor.Result, error) {
 			return advisor.Analyze(detected, index, advisor.Options{}), nil
 		},
 		OnComplete: func(_ context.Context, _ scan.Result, advice advisor.Result, status string, _ map[string][]scan.DirectoryNode, _ func(written, total int64)) error {
@@ -301,7 +302,7 @@ func TestRunScanFailsWhenAnalysisFails(t *testing.T) {
 		Detect: func(context.Context, scan.Result, func(detect.Progress)) (assets.Graph, error) {
 			return assets.Graph{}, nil
 		},
-		Advise: func(context.Context, scan.Result, assets.Graph, map[string][]scan.DirectoryNode) (advisor.Result, error) {
+		Advise: func(context.Context, scan.Result, assets.Graph, map[string][]scan.DirectoryNode, policy.Effective) (advisor.Result, error) {
 			return advisor.Result{}, errAnalysis
 		},
 	}

@@ -24,8 +24,11 @@ struct AdviceView: View {
                 )
             } else {
                 HSplitView {
-                    inbox
-                        .frame(minWidth: 280, idealWidth: 340)
+                    VStack(alignment: .leading, spacing: 0) {
+                        inbox
+                        policyFooter
+                    }
+                    .frame(minWidth: 280, idealWidth: 340)
                     detail
                         .frame(minWidth: 360)
                 }
@@ -40,20 +43,20 @@ struct AdviceView: View {
     private var inbox: some View {
         List(engine.recommendations, selection: $selectedID) { item in
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.title).font(.headline)
+                Text(item.title).appFont(.headline)
                 HStack(spacing: 6) {
                     RiskBadge(risk: item.risk)
                     Text(savingsLabel(item.savings))
-                        .font(.caption)
+                        .appFont(.caption)
                         .monospacedDigit()
                     if item.isBlocked {
                         Label("blocked", systemImage: "exclamationmark.triangle")
-                            .font(.caption2)
+                            .appFont(.caption2)
                             .foregroundStyle(.orange)
                     }
                 }
                 Text("\(familyLabel(item.family)) · confidence \(percent(item.confidence))")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
             }
             .padding(.vertical, 2)
@@ -61,9 +64,34 @@ struct AdviceView: View {
         }
     }
 
+    /// States what the policy withheld. An inbox that is simply shorter reads as
+    /// a machine with less to fix, which would be a lie by omission.
+    @ViewBuilder private var policyFooter: some View {
+        let suppressed = engine.suppressedRecommendations.count
+        let hidden = engine.hiddenByRiskCount
+        if suppressed > 0 || hidden > 0 {
+            Divider()
+            VStack(alignment: .leading, spacing: 2) {
+                if suppressed > 0 {
+                    Text("\(suppressed) hidden by your policy — manage them in Policy")
+                        .appFont(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if hidden > 0 {
+                    Text("\(hidden) above your risk threshold")
+                        .appFont(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+    }
+
     @ViewBuilder private var detail: some View {
         if let item = engine.recommendations.first(where: { $0.id == selectedID }) {
-            RecommendationDetailView(recommendation: item)
+            RecommendationDetailView(recommendation: item, engine: engine)
         } else {
             ContentUnavailableView(
                 "Select a recommendation",
@@ -84,38 +112,49 @@ struct AdviceView: View {
 
 struct RecommendationDetailView: View {
     let recommendation: RecommendationSummary
+    let engine: EngineClient
+    @State private var note = ""
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(recommendation.title).font(.title2.bold())
+                    Text(recommendation.title).appFont(.title2, weight: .bold)
                     HStack(spacing: 8) {
                         RiskBadge(risk: recommendation.risk)
                         Text(familyLabel(recommendation.family))
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                         Text("confidence \(percent(recommendation.confidence))")
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
+                        if recommendation.isSuppressed {
+                            Text("hidden by policy")
+                                .appFont(.caption2, weight: .semibold)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.quaternary, in: Capsule())
+                        }
                     }
                 }
 
-                Text(recommendation.explanation).font(.body)
+                Text(recommendation.explanation).appFont(.body)
+
+                decisionSection
 
                 GroupBox("Estimated savings") {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(savingsLabel(recommendation.savings))
-                            .font(.headline)
+                            .appFont(.headline)
                             .monospacedDigit()
                         if let growth = recommendation.savings.futureGrowthReductionBytes, growth > 0 {
                             Text("Avoided future growth: \(formatBytes(growth))")
-                                .font(.caption)
+                                .appFont(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         if recommendation.savings.uncertain == true {
                             Text("Estimates are ranges: hard links and missing content comparison make them lower bounds.")
-                                .font(.caption)
+                                .appFont(.caption)
                                 .foregroundStyle(.orange)
                         }
                     }
@@ -151,20 +190,20 @@ struct RecommendationDetailView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 6) {
                                         Text("#\(alternative.rank) \(alternative.label)")
-                                            .font(.subheadline.weight(.semibold))
+                                            .appFont(.subheadline, weight: .semibold)
                                         if alternative.stayPut == true {
                                             Text("stay put")
-                                                .font(.caption2)
+                                                .appFont(.caption2)
                                                 .padding(.horizontal, 5)
                                                 .padding(.vertical, 1)
                                                 .background(.quaternary, in: Capsule())
                                         }
                                         Text(String(format: "score %.2f", alternative.score))
-                                            .font(.caption)
+                                            .appFont(.caption)
                                             .foregroundStyle(.secondary)
                                     }
                                     ForEach(alternative.blockers ?? [], id: \.self) { blocker in
-                                        Text("· \(blocker)").font(.caption2).foregroundStyle(.secondary)
+                                        Text("· \(blocker)").appFont(.caption2).foregroundStyle(.secondary)
                                     }
                                 }
                             }
@@ -178,9 +217,9 @@ struct RecommendationDetailView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(affected) { asset in
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text("\(asset.displayName) · \(asset.kind)").font(.caption)
+                                    Text("\(asset.displayName) · \(asset.kind)").appFont(.caption)
                                     Text(asset.path)
-                                        .font(.caption2)
+                                        .appFont(.caption2)
                                         .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
                                 }
@@ -196,9 +235,9 @@ struct RecommendationDetailView: View {
                             ForEach(evidence) { item in
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text("\(item.kind) (\(percent(item.confidence)))")
-                                        .font(.caption.weight(.semibold))
+                                        .appFont(.caption, weight: .semibold)
                                     Text(item.value)
-                                        .font(.caption2)
+                                        .appFont(.caption2)
                                         .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
                                 }
@@ -211,11 +250,11 @@ struct RecommendationDetailView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if recommendation.adviceOnly != false {
                         Label("Advice only — DevHearth cannot execute this", systemImage: "hand.raised")
-                            .font(.caption2)
+                            .appFont(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Text("Rule \(recommendation.ruleId) v\(recommendation.ruleVersion)")
-                        .font(.caption2)
+                        .appFont(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -224,11 +263,72 @@ struct RecommendationDetailView: View {
         }
     }
 
+    /// Recording a decision and hiding advice are separate on purpose. A verdict
+    /// is local feedback about whether the advice was useful; hiding it is a
+    /// portable display preference. Neither performs the work.
+    private var decisionSection: some View {
+        GroupBox("Your decision") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Button("Useful") { record(store: "accepted") }
+                    Button("Not for me") { record(store: "rejected") }
+                    Button("Unclear") { record(store: "unclear") }
+                    Button("Later") { record(store: "later") }
+                }
+                TextField("Optional note (stays on this Mac)", text: $note)
+                    .textFieldStyle(.roundedBorder)
+
+                Divider()
+
+                HStack(spacing: 8) {
+                    if recommendation.isSuppressed {
+                        Button("Show again") { suppress(undo: true, wholeFamily: false) }
+                    } else {
+                        Button("Hide this") { suppress(undo: false, wholeFamily: false) }
+                        Button("Hide all \(familyLabel(recommendation.family))") {
+                            suppress(undo: false, wholeFamily: true)
+                        }
+                    }
+                }
+                Text("Hiding is a display preference recorded in your portable policy. Verdicts stay on this Mac and are never exported.")
+                    .appFont(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func record(store verdict: String) {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            await engine.sendFeedback(
+                recommendation: recommendation,
+                verdict: verdict,
+                note: trimmed.isEmpty ? nil : trimmed
+            )
+        }
+        note = ""
+    }
+
+    private func suppress(undo: Bool, wholeFamily: Bool) {
+        let reason = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            await engine.suppress(RecommendationsSuppressParams(
+                recommendationId: wholeFamily ? nil : recommendation.id,
+                family: wholeFamily ? recommendation.family : nil,
+                ecosystem: wholeFamily ? recommendation.ecosystem : nil,
+                reason: reason.isEmpty ? nil : reason,
+                undo: undo
+            ))
+        }
+        note = ""
+    }
+
     private func bulletSection(_ title: String, items: [String], tint: Color = .primary) -> some View {
         GroupBox(title) {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(items, id: \.self) { item in
-                    Text("· \(item)").font(.caption).foregroundStyle(tint)
+                    Text("· \(item)").appFont(.caption).foregroundStyle(tint)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -237,8 +337,8 @@ struct RecommendationDetailView: View {
 
     private func labeled(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.callout).textSelection(.enabled)
+            Text(title).appFont(.caption).foregroundStyle(.secondary)
+            Text(value).appFont(.callout).textSelection(.enabled)
         }
     }
 }
@@ -249,7 +349,7 @@ struct RiskBadge: View {
 
     var body: some View {
         Text(risk)
-            .font(.caption2.weight(.semibold))
+            .appFont(.caption2, weight: .semibold)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(color.opacity(0.18), in: Capsule())

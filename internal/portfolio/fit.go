@@ -28,6 +28,14 @@ func Assess(graph assets.Graph, input Input) []Assessment {
 		activeWithin = DefaultActiveWithin
 	}
 
+	// Weights are resolved once per scan: every ecosystem must be ranked under
+	// the same tradeoff, or the assessments cannot be compared to each other.
+	weights := resolveWeights(input)
+	mode := input.FitMode
+	if _, known := WeightsForMode(mode); !known {
+		mode = ModeBalanced
+	}
+
 	bySignals := gather(graph, now, activeWithin)
 	ecosystems := make([]string, 0, len(bySignals))
 	for ecosystem := range bySignals {
@@ -37,12 +45,12 @@ func Assess(graph assets.Graph, input Input) []Assessment {
 
 	out := make([]Assessment, 0, len(ecosystems))
 	for _, ecosystem := range ecosystems {
-		out = append(out, assess(bySignals[ecosystem], input.Preferred[ecosystem]))
+		out = append(out, assess(bySignals[ecosystem], input.Preferred[ecosystem], mode, weights))
 	}
 	return out
 }
 
-func assess(current *signals, preferred string) Assessment {
+func assess(current *signals, preferred, mode string, weights Weights) Assessment {
 	assessment := Assessment{
 		Ecosystem:                current.ecosystem,
 		ProjectCount:             current.projectCount(),
@@ -50,6 +58,7 @@ func assess(current *signals, preferred string) Assessment {
 		ProjectLocalInstallBytes: current.localInstallBytes,
 		SharedStoreBytes:         current.sharedStoreBytes,
 		VersionManagers:          current.versionManagers,
+		FitMode:                  mode,
 	}
 
 	candidates, deep := deepCandidates[current.ecosystem]
@@ -65,7 +74,7 @@ func assess(current *signals, preferred string) Assessment {
 		if !relevant(current, tool) {
 			continue
 		}
-		options = append(options, scoreOption(current, tool, preferred))
+		options = append(options, scoreOption(current, tool, preferred, weights))
 	}
 	if len(options) == 0 {
 		assessment.Depth = DepthShallow
