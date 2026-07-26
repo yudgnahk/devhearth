@@ -110,40 +110,97 @@ type SaveOptions struct {
 // insertBatchSize balances statement size against modernc/sqlite bind overhead.
 const insertBatchSize = 800
 
-// bulkInteriorMarkers identify high-fanout trees. The marker directory itself is
-// persisted (so sizes and assets remain), but descendants are omitted from the
-// durable inventory to keep Save bounded on developer machines.
-var bulkInteriorMarkers = []string{
-	"/node_modules/",
-	"/.git/",
-	"/.svn/",
-	"/.hg/",
-	"/target/debug/",
-	"/target/release/",
-	"/target/tmp/",
-	"/.venv/",
-	"/venv/",
-	"/__pycache__/",
-	"/.build/",
-	"/Pods/",
-	"/.gradle/",
-	"/.bun/",
-	"/dist/",
-	"/build/",
-	"/.next/",
-	"/.turbo/",
-	"/.cache/",
+// alwaysBulkNames are directory names whose contents are always regenerable
+// bulk data, identifiable from the name alone.
+var alwaysBulkNames = map[string]struct{}{
+	"node_modules": {}, ".git": {}, ".svn": {}, ".hg": {},
+	".venv": {}, "venv": {}, "__pycache__": {}, ".build": {},
+	"Pods": {}, ".gradle": {}, ".bun": {}, ".next": {}, ".turbo": {}, ".cache": {},
 }
 
-// shouldPersistPath reports whether a path is durable inventory (not interior of
-// a bulk dependency/build tree). Live in-memory UI still uses the full scan.
-func shouldPersistPath(path string) bool {
-	for _, marker := range bulkInteriorMarkers {
-		if strings.Contains(path, marker) {
-			return false
+// cargoProfileNames are bulk only directly beneath a directory named "target",
+// so a hand-written "debug" or "release" folder elsewhere is left alone.
+var cargoProfileNames = map[string]struct{}{"debug": {}, "release": {}, "tmp": {}}
+
+// ambiguousBulkNames are just as often hand-written source directories as
+// generated output, so a name match alone is not evidence.
+var ambiguousBulkNames = map[string]struct{}{"build": {}, "dist": {}}
+
+// buildManifestNames sitting beside an ambiguous directory are the evidence
+// that it is generated output rather than source.
+var buildManifestNames = map[string]struct{}{
+	"package.json": {}, "pyproject.toml": {}, "setup.py": {}, "Cargo.toml": {},
+	"CMakeLists.txt": {}, "Makefile": {}, "meson.build": {},
+	"pom.xml": {}, "build.gradle": {}, "build.gradle.kts": {}, "Package.swift": {},
+}
+
+// bulkTree holds the directories whose descendants are omitted from durable
+// inventory. Each marker directory itself is still persisted, so sizes and
+// assets remain; only its interior is dropped to keep Save bounded. The live
+// session continues to drill into the full in-memory inventory.
+type bulkTree struct {
+	roots map[string]struct{}
+}
+
+// newBulkTree resolves bulk roots from inventory entries. Ambiguous names need
+// sibling evidence, so when a directory could plausibly be source it is kept:
+// persisting extra rows is recoverable, silently dropping a source tree is not.
+func newBulkTree(entries []scan.Entry) bulkTree {
+	roots := make(map[string]struct{})
+	// Only parents of ambiguous directories are tracked, so the second pass
+	// stays bounded rather than indexing every basename in the scan.
+	candidates := make(map[string][]string)
+	for _, entry := range entries {
+		if entry.Kind != "directory" {
+			continue
+		}
+		name := filepath.Base(entry.Path)
+		if _, ok := alwaysBulkNames[name]; ok {
+			roots[entry.Path] = struct{}{}
+			continue
+		}
+		if _, ok := cargoProfileNames[name]; ok && filepath.Base(entry.ParentPath) == "target" {
+			roots[entry.Path] = struct{}{}
+			continue
+		}
+		if _, ok := ambiguousBulkNames[name]; ok && entry.ParentPath != "" {
+			candidates[entry.ParentPath] = append(candidates[entry.ParentPath], entry.Path)
 		}
 	}
-	return true
+	for _, entry := range entries {
+		if len(candidates) == 0 {
+			break
+		}
+		paths, watched := candidates[entry.ParentPath]
+		if !watched {
+			continue
+		}
+		if _, ok := buildManifestNames[filepath.Base(entry.Path)]; !ok {
+			continue
+		}
+		for _, path := range paths {
+			roots[path] = struct{}{}
+		}
+		delete(candidates, entry.ParentPath)
+	}
+	return bulkTree{roots: roots}
+}
+
+// contains reports whether path lies below a bulk root (the root itself does not).
+func (b bulkTree) contains(path string) bool {
+	if len(b.roots) == 0 {
+		return false
+	}
+	for current := filepath.Dir(path); ; {
+		if _, ok := b.roots[current]; ok {
+			return true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
+		current = parent
+	}
 }
 
 // Save persists inventory metadata and an optional asset graph for one scan.
@@ -201,11 +258,13 @@ func (s *Store) SaveWithOptions(ctx context.Context, result scan.Result, graph a
 		}
 	}
 
+	bulk := newBulkTree(result.Entries)
+
 	// Depth order + explicit row ids lets us set parent_id in the INSERT and
 	// avoid a second pass of per-row UPDATEs (dominant cost on large trees).
 	entries := make([]scan.Entry, 0, len(result.Entries)/4+len(keepPaths))
 	for _, entry := range result.Entries {
-		if _, keep := keepPaths[entry.Path]; !keep && !shouldPersistPath(entry.Path) {
+		if _, keep := keepPaths[entry.Path]; !keep && bulk.contains(entry.Path) {
 			continue
 		}
 		entries = append(entries, entry)
@@ -222,7 +281,7 @@ func (s *Store) SaveWithOptions(ctx context.Context, result scan.Result, graph a
 	}
 	aggregates := make([]scan.DirectoryNode, 0, len(entries))
 	for _, node := range flattenDirectoryIndex(dirIndex) {
-		if _, keep := keepPaths[node.Path]; !keep && !shouldPersistPath(node.Path) {
+		if _, keep := keepPaths[node.Path]; !keep && bulk.contains(node.Path) {
 			continue
 		}
 		aggregates = append(aggregates, node)

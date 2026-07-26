@@ -142,6 +142,110 @@ func TestSaveSkipsBulkTreeInteriors(t *testing.T) {
 	}
 }
 
+// "build" and "dist" are as often hand-written source directories as generated
+// output, so pruning them needs sibling evidence. Dropping a source tree from
+// durable inventory is silent: it still appears in the live drill-down.
+func TestSavePrunesGeneratedOutputOnlyWithSiblingEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	dir := func(path, parent string) scan.Entry {
+		return scan.Entry{Path: path, ParentPath: parent, Kind: "directory", DeviceID: 1, Inode: 1, LinkCount: 1, ModifiedAt: now}
+	}
+	file := func(path, parent string) scan.Entry {
+		return scan.Entry{Path: path, ParentPath: parent, Kind: "file", LogicalBytes: 10, AllocatedBytes: 4096, DeviceID: 1, Inode: 1, LinkCount: 1, ModifiedAt: now}
+	}
+
+	tests := []struct {
+		name     string
+		entries  []scan.Entry
+		interior string
+		persist  bool
+	}{
+		{
+			name: "build beside a manifest is generated output",
+			entries: []scan.Entry{
+				dir("/proj", ""), file("/proj/CMakeLists.txt", "/proj"),
+				dir("/proj/build", "/proj"), file("/proj/build/app.o", "/proj/build"),
+			},
+			interior: "/proj/build/app.o",
+			persist:  false,
+		},
+		{
+			name: "build with no manifest beside it is source",
+			entries: []scan.Entry{
+				dir("/proj", ""), file("/proj/README.md", "/proj"),
+				dir("/proj/build", "/proj"), file("/proj/build/release.sh", "/proj/build"),
+			},
+			interior: "/proj/build/release.sh",
+			persist:  true,
+		},
+		{
+			name: "dist beside a manifest is generated output",
+			entries: []scan.Entry{
+				dir("/app", ""), file("/app/package.json", "/app"),
+				dir("/app/dist", "/app"), file("/app/dist/bundle.js", "/app/dist"),
+			},
+			interior: "/app/dist/bundle.js",
+			persist:  false,
+		},
+		{
+			name: "dist with no manifest beside it is source",
+			entries: []scan.Entry{
+				dir("/docs", ""), dir("/docs/dist", "/docs"),
+				file("/docs/dist/logo.svg", "/docs/dist"),
+			},
+			interior: "/docs/dist/logo.svg",
+			persist:  true,
+		},
+		{
+			name: "release only counts as bulk beneath target",
+			entries: []scan.Entry{
+				dir("/notes", ""), dir("/notes/release", "/notes"),
+				file("/notes/release/changelog.md", "/notes/release"),
+			},
+			interior: "/notes/release/changelog.md",
+			persist:  true,
+		},
+		{
+			name: "cargo target profile stays bulk",
+			entries: []scan.Entry{
+				dir("/rs", ""), dir("/rs/target", "/rs"),
+				dir("/rs/target/release", "/rs/target"),
+				file("/rs/target/release/app", "/rs/target/release"),
+			},
+			interior: "/rs/target/release/app",
+			persist:  false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			database, err := Open(filepath.Join(t.TempDir(), "inventory.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			result := scan.Result{
+				Roots: []string{test.entries[0].Path}, StartedAt: now, CompletedAt: now,
+				Entries: test.entries,
+			}
+			id, err := database.Save(context.Background(), result, assets.Graph{}, "complete")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := database.db.QueryRow(
+				`SELECT COUNT(*) FROM filesystem_entries WHERE scan_id = ? AND path = ?`,
+				id, test.interior,
+			).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if persisted := count == 1; persisted != test.persist {
+				t.Fatalf("%s persisted = %v, want %v", test.interior, persisted, test.persist)
+			}
+		})
+	}
+}
+
 // A bulk save must not trade crash safety for speed, and must leave the
 // connection's integrity settings exactly as it found them.
 func TestSaveKeepsDurableConnectionSettings(t *testing.T) {
